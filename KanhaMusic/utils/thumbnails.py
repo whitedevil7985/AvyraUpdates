@@ -1,5 +1,6 @@
 import os
 import asyncio
+import re
 from types import SimpleNamespace
 
 import aiohttp
@@ -59,8 +60,10 @@ class Thumbnail:
     async def generate(self, song) -> str:
         try:
             os.makedirs("cache", exist_ok=True)
-            temp = f"cache/temp_{song.id}.jpg"
-            final_path = f"cache/{song.id}.png"
+            # Versioned cache prevents old/mismatched artwork from being reused.
+            safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(song.id))
+            temp = f"cache/temp_v2_{safe_id}.jpg"
+            final_path = f"cache/v2_{safe_id}.png"
             if os.path.exists(final_path):
                 return final_path
 
@@ -173,27 +176,60 @@ class Thumbnail:
 
 
 _thumbnail = Thumbnail()
+_thumbnail_locks = {}
+
+
+async def _youtube_oembed(videoid):
+    """Fetch metadata for this exact YouTube ID (never a search result)."""
+    url = "https://www.youtube.com/oembed"
+    params = {
+        "url": f"https://www.youtube.com/watch?v={videoid}",
+        "format": "json",
+    }
+    try:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return (
+                        str(data.get("title") or "YouTube Track"),
+                        str(data.get("author_name") or ""),
+                        str(data.get("thumbnail_url") or ""),
+                    )
+    except Exception as exc:
+        print(f"YouTube oEmbed metadata error for {videoid}: {exc}")
+    return None, None, None
 
 
 async def get_thumb(videoid):
-    final_path = f"cache/{videoid}.png"
+    """Build artwork from the exact currently-playing YouTube video ID."""
+    videoid = str(videoid or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{11}", videoid):
+        return YOUTUBE_IMG_URL
+
+    os.makedirs("cache", exist_ok=True)
+    final_path = f"cache/v2_{videoid}.png"
     if os.path.isfile(final_path) and os.path.getsize(final_path) > 0:
         return final_path
 
-    try:
-        from KanhaMusic.platforms.Youtube import get_video_info
+    lock = _thumbnail_locks.setdefault(videoid, asyncio.Lock())
+    async with lock:
+        if os.path.isfile(final_path) and os.path.getsize(final_path) > 0:
+            return final_path
 
-        info = await get_video_info(videoid, mode="audio")
-        if not info or not info[0] or info[0] == "N/A":
-            return YOUTUBE_IMG_URL
-        title = info[0]
-        channel = info[4] if info[4] and info[4] != "N/A" else ""
-        thumb = info[7]
-    except Exception:
-        return YOUTUBE_IMG_URL
+        title, channel, thumb = await _youtube_oembed(videoid)
 
-    if not isinstance(thumb, str) or not thumb.startswith("http"):
-        thumb = f"https://i.ytimg.com/vi/{videoid}/hqdefault.jpg"
+        # Only accept metadata returned for the exact requested video ID.
+        if not thumb or not thumb.startswith("https://"):
+            thumb = f"https://i.ytimg.com/vi/{videoid}/hqdefault.jpg"
+        if not title:
+            title, channel = "YouTube Track", ""
 
-    song = SimpleNamespace(id=videoid, title=title, channel_name=channel, thumbnail=thumb)
-    return await _thumbnail.generate(song)
+        song = SimpleNamespace(
+            id=videoid,
+            title=title,
+            channel_name=channel or "",
+            thumbnail=thumb,
+        )
+        return await _thumbnail.generate(song)
