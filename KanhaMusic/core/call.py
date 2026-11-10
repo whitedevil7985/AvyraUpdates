@@ -18,7 +18,6 @@ from pytgcalls.types.stream import StreamAudioEnded
 
 import config
 from KanhaMusic import LOGGER, YouTube, ayush
-from KanhaMusic.platforms.Youtube import get_stream
 from KanhaMusic.misc import db
 from KanhaMusic.utils.database import (
     add_active_chat,
@@ -559,26 +558,19 @@ class Call(PyTgCalls):
             elif "vid_" in queued:
                 mystic = await ayush.send_message(original_chat_id, _["call_7"])
                 file_path = None
-                # Resolve a fresh remote audio URL at track transition. This
-                # avoids downloading the full next song before it can start.
-                if not video:
-                    try:
-                        file_path = await asyncio.wait_for(
-                            get_stream(f"https://www.youtube.com/watch?v={videoid}"),
-                            timeout=18,
-                        )
-                    except Exception:
+                # Queue entries must resolve to an actual local file.
+                # Provider stream URLs are temporary remote URLs, not paths.
+                try:
+                    file_path, _direct = await YouTube.download(
+                        videoid,
+                        mystic,
+                        videoid=True,
+                        video=True if str(streamtype) == "video" else False,
+                    )
+                    if isinstance(file_path, str) and file_path.startswith(("http://", "https://")):
                         file_path = None
-                if not file_path:
-                    try:
-                        file_path, _direct = await YouTube.download(
-                            videoid,
-                            mystic,
-                            videoid=True,
-                            video=True if str(streamtype) == "video" else False,
-                        )
-                    except Exception:
-                        file_path = None
+                except Exception:
+                    file_path = None
                 if not file_path:
                     try:
                         await mystic.edit_text(_["call_6"])
@@ -651,33 +643,26 @@ class Call(PyTgCalls):
                 # A direct audio URL may have expired while waiting in the
                 # queue. Refresh it just before starting the track.
                 if (
-                    not video
-                    and isinstance(queued, str)
+                    isinstance(queued, str)
                     and queued.startswith(("http://", "https://"))
                     and isinstance(videoid, str)
                     and len(videoid) == 11
                 ):
-                    refreshed = None
+                    # Migrate a URL left in an existing queue to a local file
+                    # before handing it to PyTgCalls.
                     try:
-                        refreshed = await asyncio.wait_for(
-                            get_stream(f"https://www.youtube.com/watch?v={videoid}"),
-                            timeout=18,
+                        local_path, _direct = await YouTube.download(
+                            videoid, None, videoid=True, video=video
                         )
+                        if local_path and not str(local_path).startswith(("http://", "https://")):
+                            queued = local_path
+                            db[chat_id][0]["file"] = local_path
+                        else:
+                            raise RuntimeError("Download did not return a local file")
                     except Exception:
-                        pass
-                    if refreshed:
-                        queued = refreshed
-                        db[chat_id][0]["file"] = refreshed
-                    else:
-                        try:
-                            fallback_path, _direct = await YouTube.download(
-                                videoid, None, videoid=True, video=False
-                            )
-                            if fallback_path:
-                                queued = fallback_path
-                                db[chat_id][0]["file"] = fallback_path
-                        except Exception:
-                            pass
+                        return await ayush.send_message(
+                            original_chat_id, text=_[ "call_6" ]
+                        )
 
                 if video:
                     stream = AudioVideoPiped(
