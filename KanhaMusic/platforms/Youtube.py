@@ -288,11 +288,34 @@ def is_direct_stream_url(url: str) -> bool:
     return True
 
 async def _validate_audio_source(url: str) -> bool:
-    """Reject provider URLs that return an HTML/error page instead of audio."""
+    """Accept only URLs ffmpeg can actually open as an audio stream."""
     url = normalize_media_url(url)
     if not url:
         return False
-    timeout = aiohttp.ClientTimeout(total=5, connect=3, sock_read=3)
+
+    # A successful HTTP response is not proof that the URL contains audio.
+    # Probe the media stream itself so HTML/error pages and broken MP3 links
+    # never reach PyTgCalls (NoAudioSourceFound).
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=codec_type",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            url,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=7)
+        return process.returncode == 0 and b"audio" in stdout.lower()
+    except FileNotFoundError:
+        # Minimal fallback for deployments that do not include ffprobe.
+        pass
+    except Exception:
+        return False
+
+    timeout = aiohttp.ClientTimeout(total=4, connect=2, sock_read=2)
     headers = {
         "Range": "bytes=0-2047",
         "User-Agent": "Mozilla/5.0 (compatible; KanhaMusic/1.0)",
@@ -306,12 +329,9 @@ async def _validate_audio_source(url: str) -> bool:
                 if any(kind in content_type for kind in ("text/html", "application/json", "text/plain")):
                     return False
                 sample = await response.content.read(2048)
-                if not sample:
-                    return False
-                prefix = sample.lstrip()[:32].lower()
-                if prefix.startswith((b"<!doctype html", b"<html", b"{", b"[")):
-                    return False
-                return True
+                return bool(sample) and not sample.lstrip()[:32].lower().startswith(
+                    (b"<!doctype html", b"<html", b"{", b"[")
+                )
     except Exception:
         return False
 
