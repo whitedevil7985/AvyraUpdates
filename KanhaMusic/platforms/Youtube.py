@@ -287,6 +287,35 @@ def is_direct_stream_url(url: str) -> bool:
         return False
     return True
 
+async def _validate_audio_source(url: str) -> bool:
+    """Reject provider URLs that return an HTML/error page instead of audio."""
+    url = normalize_media_url(url)
+    if not url:
+        return False
+    timeout = aiohttp.ClientTimeout(total=5, connect=3, sock_read=3)
+    headers = {
+        "Range": "bytes=0-2047",
+        "User-Agent": "Mozilla/5.0 (compatible; KanhaMusic/1.0)",
+    }
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(url, allow_redirects=True) as response:
+                if response.status not in (200, 206):
+                    return False
+                content_type = (response.headers.get("Content-Type") or "").lower()
+                if any(kind in content_type for kind in ("text/html", "application/json", "text/plain")):
+                    return False
+                sample = await response.content.read(2048)
+                if not sample:
+                    return False
+                prefix = sample.lstrip()[:32].lower()
+                if prefix.startswith((b"<!doctype html", b"<html", b"{", b"[")):
+                    return False
+                return True
+    except Exception:
+        return False
+
+
 def normalize_media_url(value) -> str | None:
     """Extract a real HTTP media URL from provider responses."""
     if not isinstance(value, str):
@@ -455,12 +484,14 @@ async def get_stream(url: str, cookies: str | None = None, skip_api: bool = Fals
         cached = _mem_cache_get(("audio", url))
         if cached:
             cached = normalize_media_url(cached)
-            if cached:
+            if cached and await _validate_audio_source(cached):
                 return cached
+            _STREAM_CACHE.pop(("audio", url), None)
+            _MEM_CACHE.pop(("audio", url), None)
         cached = await _read_cache(url, prefix="audio_")
         if cached:
             cached = normalize_media_url(cached)
-            if cached:
+            if cached and await _validate_audio_source(cached):
                 _mem_cache_set(("audio", url), cached)
                 return cached
 
@@ -511,7 +542,7 @@ async def get_stream(url: str, cookies: str | None = None, skip_api: bool = Fals
                         stream_url = normalize_media_url(task.result())
                     except Exception:
                         stream_url = None
-                    if stream_url:
+                    if stream_url and await _validate_audio_source(stream_url):
                         for pending in tasks:
                             pending.cancel()
                         await asyncio.gather(*tasks, return_exceptions=True)
@@ -527,7 +558,7 @@ async def get_stream(url: str, cookies: str | None = None, skip_api: bool = Fals
     # [4] Fallback to yt-dlp
     stream = await _run_yt_dlp(url, "bestaudio[ext=m4a]/bestaudio/best", cookies)
     stream = normalize_media_url(stream)
-    if stream:
+    if stream and await _validate_audio_source(stream):
         _mem_cache_set(("audio", url), stream)
         await _write_cache(url, stream, prefix="audio_")
         return stream
