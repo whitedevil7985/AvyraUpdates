@@ -2,7 +2,6 @@ import logging
 from html import escape
 from pathlib import Path
 
-from pyrogram import filters
 from pyrogram.enums import ButtonStyle
 from pyrogram.handlers import ChatJoinRequestHandler
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -18,11 +17,6 @@ async def send_join_request_dm(client, request):
     """DM users who have already opened the bot at least once."""
     user = request.from_user
     chat = request.chat
-
-    # Telegram does not allow bots to start a private conversation.
-    # If the user has never pressed /start, sending a DM will be rejected.
-    bot_username = client.me.username
-    start_url = f"https://t.me/{bot_username}?start=join_request"
 
     group_name = escape(chat.title or "the group")
     first_name = escape(user.first_name or "there")
@@ -48,14 +42,7 @@ async def send_join_request_dm(client, request):
                     url=config.SUPPORT_CHANNEL,
                     style=ButtonStyle.SUCCESS,
                 ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "🤖 Open Bot",
-                    url=start_url,
-                    style=ButtonStyle.PRIMARY,
-                )
-            ],
+            ]
         ]
     )
 
@@ -72,8 +59,8 @@ async def send_join_request_dm(client, request):
             chat.id,
         )
     except Exception as exc:
-        # Most commonly PeerIdInvalid / ChatWriteForbidden when the user
-        # has not started the bot, blocked it, or has privacy restrictions.
+        # Telegram may reject the DM if the user has never started the bot
+        # or has blocked it. Log only the exception type, not private data.
         LOGGER.info(
             "Could not DM join requester user_id=%s chat_id=%s (%s)",
             user.id,
