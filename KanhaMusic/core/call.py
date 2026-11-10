@@ -18,6 +18,7 @@ from pytgcalls.types.stream import StreamAudioEnded
 
 import config
 from KanhaMusic import LOGGER, YouTube, ayush
+from KanhaMusic.platforms.Youtube import get_stream
 from KanhaMusic.misc import db
 from KanhaMusic.utils.database import (
     add_active_chat,
@@ -539,17 +540,33 @@ class Call(PyTgCalls):
                     db[chat_id][0]["markup"] = "tg"
             elif "vid_" in queued:
                 mystic = await ayush.send_message(original_chat_id, _["call_7"])
-                try:
-                    file_path, direct = await YouTube.download(
-                        videoid,
-                        mystic,
-                        videoid=True,
-                        video=True if str(streamtype) == "video" else False,
-                    )
-                except:
-                    return await mystic.edit_text(
-                        _["call_6"], disable_web_page_preview=True
-                    )
+                file_path = None
+                # Resolve a fresh remote audio URL at track transition. This
+                # avoids downloading the full next song before it can start.
+                if not video:
+                    try:
+                        file_path = await asyncio.wait_for(
+                            get_stream(f"https://www.youtube.com/watch?v={videoid}"),
+                            timeout=18,
+                        )
+                    except Exception:
+                        file_path = None
+                if not file_path:
+                    try:
+                        file_path, _direct = await YouTube.download(
+                            videoid,
+                            mystic,
+                            videoid=True,
+                            video=True if str(streamtype) == "video" else False,
+                        )
+                    except Exception:
+                        file_path = None
+                if not file_path:
+                    try:
+                        await mystic.edit_text(_["call_6"])
+                    except Exception:
+                        pass
+                    return
                 if video:
                     stream = AudioVideoPiped(
                         file_path,
