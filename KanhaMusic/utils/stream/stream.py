@@ -61,7 +61,7 @@ async def _join_with_local_fallback(
         await Kanha.join_call(
             chat_id, original_chat_id, source, video=video, image=thumbnail
         )
-        return source, True
+        return source, isinstance(source, str) and source.startswith(("http://", "https://"))
     except Exception:
         if not isinstance(source, str) or not source.startswith(("http://", "https://")):
             raise
