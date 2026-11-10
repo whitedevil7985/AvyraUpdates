@@ -53,6 +53,37 @@ async def _fetch(_, chat_id, vidid, mystic, video):
     return file_path, direct
 
 
+async def _join_with_local_fallback(
+    chat_id, original_chat_id, source, vidid, video, thumbnail=None
+):
+    """Try the fastest remote stream first, then fall back to a real local file."""
+    try:
+        await Kanha.join_call(
+            chat_id, original_chat_id, source, video=video, image=thumbnail
+        )
+        return source, True
+    except Exception:
+        if not isinstance(source, str) or not source.startswith(("http://", "https://")):
+            raise
+
+    # The provider URL may pass probing but still fail when Telegram/FFmpeg
+    # opens it. Download the track locally and retry instead of leaving the VC.
+    local_path, _ = await YouTube.download(
+        vidid, None, videoid=True, video=True if video else None
+    )
+    if (
+        not local_path
+        or str(local_path).startswith(("http://", "https://"))
+        or not os.path.isfile(local_path)
+    ):
+        raise AssistantErr("Audio stream failed and local fallback download was unavailable.")
+
+    await Kanha.join_call(
+        chat_id, original_chat_id, local_path, video=video, image=thumbnail
+    )
+    return local_path, False
+
+
 async def _announce_queue(_, chat_id, original_chat_id, mystic, title, duration_min, user_name):
     check = db.get(chat_id) or []
     position = len(check) - 1 if check else 0
@@ -159,12 +190,8 @@ async def _stream(
                 status = True if video else None
                 thumb_task = asyncio.ensure_future(get_thumb(vidid))
                 file_path, direct = await _fetch(_, chat_id, vidid, mystic, video)
-                await Kanha.join_call(
-                    chat_id,
-                    original_chat_id,
-                    file_path,
-                    video=status,
-                    image=thumbnail,
+                file_path, direct = await _join_with_local_fallback(
+                    chat_id, original_chat_id, file_path, vidid, status, thumbnail
                 )
                 await put_queue(
                     chat_id,
@@ -244,12 +271,8 @@ async def _stream(
             else:
                 if not forceplay:
                     db[chat_id] = []
-                await Kanha.join_call(
-                    chat_id,
-                    original_chat_id,
-                    file_path,
-                    video=status,
-                    image=thumbnail,
+                file_path, direct = await _join_with_local_fallback(
+                    chat_id, original_chat_id, file_path, vidid, status, thumbnail
                 )
                 await put_queue(
                     chat_id,
