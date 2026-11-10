@@ -65,7 +65,6 @@ async def _render(kind, message):
         text,
         reply_markup=keyboard,
         parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True,
     )
 
 
