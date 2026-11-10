@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import config
 from KanhaMusic import Carbon, YouTube, ayush
+from KanhaMusic.platforms.Youtube import get_stream, normalize_media_url
 from KanhaMusic.core.call import Kanha
 from KanhaMusic.misc import db
 from KanhaMusic.utils.database import add_active_video_chat, is_active_chat
@@ -22,18 +23,32 @@ from KanhaMusic.utils.thumbnails import get_thumb
 
 
 async def _fetch(_, chat_id, vidid, mystic, video):
-    # Keep the playback source as a real local file. The provider's
-    # temporary download URLs are not filesystem paths and must never be
-    # stored in the queue as file entries.
-    status = True if video else None
+    # Join the VC in parallel with metadata/search work, then resolve a
+    # remote audio stream first so playback does not wait for a full download.
     await Kanha.await_prejoin(chat_id)
+
+    if not video:
+        watch_url = f"https://www.youtube.com/watch?v={vidid}"
+        try:
+            stream_url = await asyncio.wait_for(get_stream(watch_url), timeout=16)
+            stream_url = normalize_media_url(stream_url)
+            if stream_url:
+                return stream_url, True
+        except Exception:
+            pass
+
+    # Stable local-file fallback for video or unavailable stream providers.
     try:
         file_path, direct = await YouTube.download(
-            vidid, mystic, videoid=True, video=status
+            vidid, mystic, videoid=True, video=True if video else None
         )
     except Exception:
         file_path, direct = None, False
-    if not file_path or str(file_path).startswith(("http://", "https://")):
+    if (
+        not file_path
+        or str(file_path).startswith(("http://", "https://"))
+        or not os.path.isfile(file_path)
+    ):
         raise AssistantErr(_["play_14"])
     return file_path, direct
 
