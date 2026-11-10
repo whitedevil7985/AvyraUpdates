@@ -269,41 +269,58 @@ class Call(PyTgCalls):
 
     async def speedup_stream(self, chat_id: int, file_path, speed, playing):
         assistant = await group_assistant(self, chat_id)
+        source_path = file_path
+        is_remote = isinstance(file_path, str) and file_path.startswith(("http://", "https://"))
+
+        # Transcoding a remote source directly is unreliable and may create
+        # invalid cache filenames. Download only when the user requests a
+        # speed conversion; normal 1x playback remains URL-based.
+        if is_remote and str(speed) != "1.0":
+            source_path, _direct = await YouTube.download(
+                playing[0].get("vidid"),
+                None,
+                videoid=True,
+                video=playing[0].get("streamtype") == "video",
+            )
+            if not source_path:
+                raise AssistantErr("Could not prepare this track for speed conversion.")
+
         if str(speed) != str("1.0"):
-            base = os.path.basename(file_path)
+            import hashlib
+
+            base = hashlib.sha256(str(source_path).encode()).hexdigest() + ".media"
             chatdir = os.path.join(os.getcwd(), "playback", str(speed))
-            if not os.path.isdir(chatdir):
-                os.makedirs(chatdir)
+            os.makedirs(chatdir, exist_ok=True)
             out = os.path.join(chatdir, base)
             if not os.path.isfile(out):
                 if str(speed) == str("0.5"):
                     vs = 2.0
-                if str(speed) == str("0.75"):
+                elif str(speed) == str("0.75"):
                     vs = 1.35
-                if str(speed) == str("1.5"):
+                elif str(speed) == str("1.5"):
                     vs = 0.68
-                if str(speed) == str("2.0"):
+                elif str(speed) == str("2.0"):
                     vs = 0.5
-                proc = await asyncio.create_subprocess_shell(
-                    cmd=(
-                        "ffmpeg "
-                        "-i "
-                        f"{file_path} "
-                        "-filter:v "
-                        f"setpts={vs}*PTS "
-                        "-filter:a "
-                        f"atempo={speed} "
-                        f"{out}"
-                    ),
-                    stdin=asyncio.subprocess.PIPE,
+                else:
+                    raise AssistantErr("Unsupported playback speed.")
+                proc = await asyncio.create_subprocess_exec(
+                    "ffmpeg", "-y", "-i", str(source_path),
+                    "-filter:v", f"setpts={vs}*PTS",
+                    "-filter:a", f"atempo={speed}", out,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                await proc.communicate()
-            else:
-                pass
+                _stdout, _stderr = await proc.communicate()
+                if proc.returncode != 0 or not os.path.isfile(out):
+                    raise AssistantErr("Could not convert this track to the selected speed.")
         else:
             out = file_path
-        dur = await asyncio.get_event_loop().run_in_executor(None, check_duration, out)
+
+        if is_remote and str(speed) == "1.0":
+            dur = int(playing[0].get("seconds") or 0)
+        else:
+            dur = await asyncio.get_event_loop().run_in_executor(None, check_duration, out)
         dur = int(dur)
         played, con_seconds = speed_converter(playing[0]["played"], speed)
         duration = seconds_to_min(dur)
