@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 
 from pyrogram import filters
@@ -16,6 +17,8 @@ from KanhaMusic.utils.database import (
 )
 from strings import get_string
 
+LOGGER = logging.getLogger(__name__)
+
 FETCH_CONCURRENCY = 15
 DISPLAY_LIMIT = 60
 REFRESH_COOLDOWN = 5
@@ -29,14 +32,25 @@ async def _lang(chat_id):
 
 
 async def _resolve(chat_id, drop):
+    # Do not remove a playing chat just because the bot account cannot
+    # resolve its title (for example, when only an assistant is in the VC).
     async with _gate:
         try:
             chat = await ayush.get_chat(chat_id)
+            title = unidecode((getattr(chat, "title", None) or str(chat_id)).strip()).upper()
+            return {
+                "id": chat_id,
+                "title": title or str(chat_id),
+                "username": getattr(chat, "username", None),
+            }
         except Exception:
-            await drop(chat_id)
-            return None
-    title = unidecode((chat.title or str(chat_id)).strip()).upper() or str(chat_id)
-    return {"id": chat_id, "title": title, "username": chat.username}
+            LOGGER.warning(
+                "Could not resolve active music chat metadata for chat_id=%s; "
+                "keeping it in the active VC count.",
+                chat_id,
+                exc_info=True,
+            )
+            return {"id": chat_id, "title": str(chat_id), "username": None}
 
 
 async def _resolve_all(chat_ids, drop):
@@ -105,6 +119,7 @@ async def _launch(message: Message, kind):
     try:
         await _render(_, kind, loading)
     except Exception:
+        LOGGER.exception("Active %s chat report failed", kind)
         try:
             await loading.edit_text(_["ACTIVE_FAILED"])
         except Exception:
@@ -139,4 +154,5 @@ async def active_callback(client, cq):
     try:
         await _render(_, kind, cq.message)
     except Exception:
+        LOGGER.exception("Active %s chat refresh failed", kind)
         await cq.answer(_["ACTIVE_FAILED"], show_alert=True)
