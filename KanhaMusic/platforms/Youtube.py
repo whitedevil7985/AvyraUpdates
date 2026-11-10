@@ -287,6 +287,21 @@ def is_direct_stream_url(url: str) -> bool:
         return False
     return True
 
+def normalize_media_url(value) -> str | None:
+    """Extract a real HTTP media URL from provider responses."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    markdown = re.fullmatch(r"\[[^\]]+\]\((https?://[^)]+)\)", value)
+    if markdown:
+        value = markdown.group(1).strip()
+    if value.startswith("<") and value.endswith(">"):
+        value = value[1:-1].strip()
+    parsed = urlparse(value)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+    return value
+
 
 def is_external_path(path) -> bool:
     if not path:
@@ -439,16 +454,21 @@ async def get_stream(url: str, cookies: str | None = None, skip_api: bool = Fals
     if not skip_api:
         cached = _mem_cache_get(("audio", url))
         if cached:
-            return cached
+            cached = normalize_media_url(cached)
+            if cached:
+                return cached
         cached = await _read_cache(url, prefix="audio_")
         if cached:
-            _mem_cache_set(("audio", url), cached)
-            return cached
+            cached = normalize_media_url(cached)
+            if cached:
+                _mem_cache_set(("audio", url), cached)
+                return cached
 
     # [1] Primary: Inflex API (@InflexAPIBot)
     if INFLEX_API_KEY and INFLEX_API_URL and not skip_api:
         try:
             stream = await _inflex_api_get_stream(url, is_video=False, timeout=12)
+            stream = normalize_media_url(stream)
             if stream:
                 _mem_cache_set(("audio", url), stream)
                 await _write_cache(url, stream, prefix="audio_")
@@ -477,8 +497,8 @@ async def get_stream(url: str, cookies: str | None = None, skip_api: bool = Fals
             )
             if resp.status_code == 200:
                 data = resp.json()
-                if data.get("stream_url"):
-                    stream = data["stream_url"]
+                stream = normalize_media_url(data.get("stream_url"))
+                if stream:
                     _api_record_success()
                     _mem_cache_set(("audio", url), stream)
                     await _write_cache(url, stream, prefix="audio_")
@@ -489,6 +509,7 @@ async def get_stream(url: str, cookies: str | None = None, skip_api: bool = Fals
 
     # [4] Fallback to yt-dlp
     stream = await _run_yt_dlp(url, "bestaudio[ext=m4a]/bestaudio/best", cookies)
+    stream = normalize_media_url(stream)
     if stream:
         _mem_cache_set(("audio", url), stream)
         await _write_cache(url, stream, prefix="audio_")
