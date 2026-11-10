@@ -36,7 +36,7 @@ def start_panel(_):
 
 
 def private_panel(_):
-    s = _random_styles(5)
+    s = _random_styles(4)
     buttons = [
         [
             InlineKeyboardButton(
@@ -66,14 +66,9 @@ def private_panel(_):
         ],
         [
             InlineKeyboardButton(
-                text="sσυꝛᴄє",
-                url="https://github.com/Oyekanhaa/KanhaMusic/fork",
-                style=random.choice(COLORS),
-            ),
-            InlineKeyboardButton(
                 text=_["S_B_5"],
                 user_id=config.OWNER_ID,
-                style=s[4],
+                style=random.choice(COLORS),
             ),
         ],
     ]
