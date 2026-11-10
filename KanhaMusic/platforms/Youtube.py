@@ -357,7 +357,7 @@ async def _run_yt_dlp(url: str, format_selector: str, cookies: str | None) -> st
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=40)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
         if proc.returncode == 0 and stdout:
             return stdout.decode().strip().split("\n")[0]
     except Exception:
@@ -467,7 +467,7 @@ async def get_stream(url: str, cookies: str | None = None, skip_api: bool = Fals
     # [1] Primary: Inflex API (@InflexAPIBot)
     if INFLEX_API_KEY and INFLEX_API_URL and not skip_api:
         try:
-            stream = await _inflex_api_get_stream(url, is_video=False, timeout=12)
+            stream = await _inflex_api_get_stream(url, is_video=False, timeout=5)
             stream = normalize_media_url(stream)
             if stream:
                 _mem_cache_set(("audio", url), stream)
@@ -479,7 +479,7 @@ async def get_stream(url: str, cookies: str | None = None, skip_api: bool = Fals
     # [2] Secondary: Ritesh API
     if API_KEY and API_URL and not skip_api:
         try:
-            stream = await _ritesh_api_get_stream(url, is_video=False, timeout=12)
+            stream = await _ritesh_api_get_stream(url, is_video=False, timeout=5)
             stream = normalize_media_url(stream)
             if stream:
                 _mem_cache_set(("audio", url), stream)
@@ -1192,7 +1192,7 @@ class YouTubeAPI:
             return cached, cached["vidid"]
 
         results = VideosSearch(link, limit=1)
-        data = await asyncio.wait_for(results.next(), timeout=12)
+        data = await asyncio.wait_for(results.next(), timeout=5)
         for result in data.get("result", []):
             title = result["title"]
             duration_min = result["duration"]
