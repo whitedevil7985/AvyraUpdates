@@ -288,7 +288,8 @@ class Call(PyTgCalls):
         if str(speed) != str("1.0"):
             import hashlib
 
-            base = hashlib.sha256(str(source_path).encode()).hexdigest() + ".media"
+            extension = os.path.splitext(str(source_path))[1] or ".m4a"
+            base = hashlib.sha256(str(source_path).encode()).hexdigest() + extension
             chatdir = os.path.join(os.getcwd(), "playback", str(speed))
             os.makedirs(chatdir, exist_ok=True)
             out = os.path.join(chatdir, base)
