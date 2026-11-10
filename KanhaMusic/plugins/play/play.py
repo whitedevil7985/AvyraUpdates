@@ -79,7 +79,8 @@ async def play_commnd(
 
 
 async def _wants_prejoin(message, chat_id, playmode, url):
-    return False
+    # Start joining the voice chat while the play request is being resolved.
+    return not await is_active_chat(chat_id)
 
 
 async def _play_flow(
