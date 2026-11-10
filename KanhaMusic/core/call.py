@@ -446,22 +446,29 @@ class Call(PyTgCalls):
         joined = False
         task = self._prejoin_tasks.pop(chat_id, None)
         if task is not None:
-            await task
-            prejoin_was_video = self._prejoin_video.pop(chat_id, False)
-            if bool(video) == prejoin_was_video:
-                try:
-                    await assistant.change_stream(chat_id, stream)
-                    joined = True
-                except Exception:
+            prejoin_ready = False
+            try:
+                await task
+                prejoin_ready = True
+            except Exception:
+                # A failed early join must not prevent the normal join path.
+                self._prejoin_video.pop(chat_id, None)
+            if prejoin_ready:
+                prejoin_was_video = self._prejoin_video.pop(chat_id, False)
+                if bool(video) == prejoin_was_video:
+                    try:
+                        await assistant.change_stream(chat_id, stream)
+                        joined = True
+                    except Exception:
+                        try:
+                            await assistant.leave_group_call(chat_id)
+                        except Exception:
+                            pass
+                else:
                     try:
                         await assistant.leave_group_call(chat_id)
                     except Exception:
                         pass
-            else:
-                try:
-                    await assistant.leave_group_call(chat_id)
-                except Exception:
-                    pass
         if not joined:
             await self._assistant_join(assistant, chat_id, stream, _)
         await add_active_chat(chat_id)
