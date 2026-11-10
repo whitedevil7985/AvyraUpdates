@@ -307,7 +307,7 @@ async def _validate_audio_source(url: str) -> bool:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=7)
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=2.5)
         return process.returncode == 0 and b"audio" in stdout.lower()
     except FileNotFoundError:
         # Minimal fallback for deployments that do not include ffprobe.
@@ -315,7 +315,7 @@ async def _validate_audio_source(url: str) -> bool:
     except Exception:
         return False
 
-    timeout = aiohttp.ClientTimeout(total=4, connect=2, sock_read=2)
+    timeout = aiohttp.ClientTimeout(total=2.5, connect=1.5, sock_read=1)
     headers = {
         "Range": "bytes=0-2047",
         "User-Agent": "Mozilla/5.0 (compatible; KanhaMusic/1.0)",
@@ -542,9 +542,9 @@ async def get_stream(url: str, cookies: str | None = None, skip_api: bool = Fals
 
     providers = []
     if INFLEX_API_KEY and INFLEX_API_URL and not skip_api:
-        providers.append(_inflex_api_get_stream(url, is_video=False, timeout=5))
+        providers.append(_inflex_api_get_stream(url, is_video=False, timeout=3))
     if API_KEY and API_URL and not skip_api:
-        providers.append(_ritesh_api_get_stream(url, is_video=False, timeout=5))
+        providers.append(_ritesh_api_get_stream(url, is_video=False, timeout=3))
     if YT_API_TOKEN and BASE_URL and not skip_api:
         providers.append(_nub_audio())
 
@@ -553,7 +553,7 @@ async def get_stream(url: str, cookies: str | None = None, skip_api: bool = Fals
         try:
             while tasks:
                 done, tasks = await asyncio.wait(
-                    tasks, timeout=5, return_when=asyncio.FIRST_COMPLETED
+                    tasks, timeout=3, return_when=asyncio.FIRST_COMPLETED
                 )
                 if not done:
                     break
