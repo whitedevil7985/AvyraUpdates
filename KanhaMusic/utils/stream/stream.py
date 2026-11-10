@@ -33,7 +33,7 @@ async def _fetch(_, chat_id, vidid, mystic, video):
         try:
             stream_url = await asyncio.wait_for(get_stream(watch_url), timeout=18)
             if stream_url:
-                return stream_url, False
+                return stream_url, True
         except asyncio.TimeoutError:
             pass
         except Exception:
