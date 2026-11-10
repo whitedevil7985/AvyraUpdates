@@ -18,6 +18,7 @@ from pytgcalls.types.stream import StreamAudioEnded
 
 import config
 from KanhaMusic import LOGGER, YouTube, ayush
+from KanhaMusic.platforms.Youtube import get_stream, normalize_media_url
 from KanhaMusic.misc import db
 from KanhaMusic.utils.database import (
     add_active_chat,
@@ -195,7 +196,14 @@ class Call(PyTgCalls):
         await self._assistant_join(assistant, chat_id, stream, _)
 
     async def prejoin_start(self, chat_id: int, video: bool = False) -> bool:
-        return False
+        if await is_active_chat(chat_id):
+            return False
+        current = self._prejoin_tasks.get(chat_id)
+        if current is not None and not current.done():
+            return True
+        task = asyncio.create_task(self._run_prejoin(chat_id, video))
+        self._prejoin_tasks[chat_id] = task
+        return True
 
     async def await_prejoin(self, chat_id: int):
         task = self._prejoin_tasks.get(chat_id)
@@ -648,21 +656,38 @@ class Call(PyTgCalls):
                     and isinstance(videoid, str)
                     and len(videoid) == 11
                 ):
-                    # Migrate a URL left in an existing queue to a local file
-                    # before handing it to PyTgCalls.
+                    # Refresh expiring provider URLs at the moment a queued
+                    # track starts. If refresh fails, fall back to local download.
+                    refreshed = None
                     try:
-                        local_path, _direct = await YouTube.download(
-                            videoid, None, videoid=True, video=video
+                        refreshed = normalize_media_url(
+                            await asyncio.wait_for(
+                                get_stream(f"https://www.youtube.com/watch?v={videoid}"),
+                                timeout=16,
+                            )
                         )
-                        if local_path and not str(local_path).startswith(("http://", "https://")):
+                    except Exception:
+                        refreshed = None
+                    if refreshed:
+                        queued = refreshed
+                        db[chat_id][0]["file"] = refreshed
+                    else:
+                        try:
+                            local_path, _direct = await YouTube.download(
+                                videoid, None, videoid=True, video=video
+                            )
+                            if (
+                                not local_path
+                                or str(local_path).startswith(("http://", "https://"))
+                                or not os.path.isfile(local_path)
+                            ):
+                                raise RuntimeError("Download did not return a local file")
                             queued = local_path
                             db[chat_id][0]["file"] = local_path
-                        else:
-                            raise RuntimeError("Download did not return a local file")
-                    except Exception:
-                        return await ayush.send_message(
-                            original_chat_id, text=_[ "call_6" ]
-                        )
+                        except Exception:
+                            return await ayush.send_message(
+                                original_chat_id, text=_[ "call_6" ]
+                            )
 
                 if video:
                     stream = AudioVideoPiped(
