@@ -30,7 +30,7 @@ async def _fetch(_, chat_id, vidid, mystic, video):
     if not video:
         watch_url = f"https://www.youtube.com/watch?v={vidid}"
         try:
-            stream_url = await asyncio.wait_for(get_stream(watch_url), timeout=16)
+            stream_url = await asyncio.wait_for(get_stream(watch_url), timeout=8)
             stream_url = normalize_media_url(stream_url)
             if stream_url:
                 return stream_url, True
