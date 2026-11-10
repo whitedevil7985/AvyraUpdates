@@ -630,6 +630,37 @@ class Call(PyTgCalls):
                     db[chat_id][0]["mystic"] = run
                     db[chat_id][0]["markup"] = "tg"
             else:
+                # A direct audio URL may have expired while waiting in the
+                # queue. Refresh it just before starting the track.
+                if (
+                    not video
+                    and isinstance(queued, str)
+                    and queued.startswith(("http://", "https://"))
+                    and isinstance(videoid, str)
+                    and len(videoid) == 11
+                ):
+                    refreshed = None
+                    try:
+                        refreshed = await asyncio.wait_for(
+                            get_stream(f"https://www.youtube.com/watch?v={videoid}"),
+                            timeout=18,
+                        )
+                    except Exception:
+                        pass
+                    if refreshed:
+                        queued = refreshed
+                        db[chat_id][0]["file"] = refreshed
+                    else:
+                        try:
+                            fallback_path, _direct = await YouTube.download(
+                                videoid, None, videoid=True, video=False
+                            )
+                            if fallback_path:
+                                queued = fallback_path
+                                db[chat_id][0]["file"] = fallback_path
+                        except Exception:
+                            pass
+
                 if video:
                     stream = AudioVideoPiped(
                         queued,
