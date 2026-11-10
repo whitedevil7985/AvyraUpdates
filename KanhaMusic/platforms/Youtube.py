@@ -1192,7 +1192,7 @@ class YouTubeAPI:
             return cached, cached["vidid"]
 
         results = VideosSearch(link, limit=1)
-        data = await asyncio.wait_for(results.next(), timeout=5)
+        data = await asyncio.wait_for(results.next(), timeout=15)
         for result in data.get("result", []):
             title = result["title"]
             duration_min = result["duration"]
