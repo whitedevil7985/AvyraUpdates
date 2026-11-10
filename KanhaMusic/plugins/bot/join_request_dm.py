@@ -1,13 +1,17 @@
 import logging
 from html import escape
+from pathlib import Path
 
 from pyrogram import filters
+from pyrogram.enums import ButtonStyle
 from pyrogram.handlers import ChatJoinRequestHandler
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+import config
 from KanhaMusic import ayush
 
 LOGGER = logging.getLogger(__name__)
+REQUEST_BANNER = Path(__file__).resolve().parents[2] / "assets" / "join_request.jpg"
 
 
 async def send_join_request_dm(client, request):
@@ -16,7 +20,7 @@ async def send_join_request_dm(client, request):
     chat = request.chat
 
     # Telegram does not allow bots to start a private conversation.
-    # If the user has never pressed /start, send_message will be rejected.
+    # If the user has never pressed /start, sending a DM will be rejected.
     bot_username = client.me.username
     start_url = f"https://t.me/{bot_username}?start=join_request"
 
@@ -32,15 +36,35 @@ async def send_join_request_dm(client, request):
     )
 
     keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🤖 Open Bot", url=start_url)]]
+        [
+            [
+                InlineKeyboardButton(
+                    "🆘 Support",
+                    url=config.SUPPORT_CHAT,
+                    style=ButtonStyle.PRIMARY,
+                ),
+                InlineKeyboardButton(
+                    "📢 Updates",
+                    url=config.SUPPORT_CHANNEL,
+                    style=ButtonStyle.SUCCESS,
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "🤖 Open Bot",
+                    url=start_url,
+                    style=ButtonStyle.PRIMARY,
+                )
+            ],
+        ]
     )
 
     try:
-        await client.send_message(
+        await client.send_photo(
             chat_id=user.id,
-            text=text,
+            photo=str(REQUEST_BANNER),
+            caption=text,
             reply_markup=keyboard,
-            disable_web_page_preview=True,
         )
         LOGGER.info(
             "Join-request DM sent to user_id=%s for chat_id=%s",
