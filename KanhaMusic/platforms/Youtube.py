@@ -1161,8 +1161,17 @@ class YouTubeAPI:
             link = self.base + link
         if "&" in link:
             link = link.split("&")[0]
+
+        # Reuse recent search metadata so repeated play requests do not
+        # pay the YouTube search round-trip again.
+        cache_key = f"track:{link.strip().lower()}"
+        cached = _mem_cache_get(("search", cache_key))
+        if cached:
+            return cached, cached["vidid"]
+
         results = VideosSearch(link, limit=1)
-        for result in (await results.next())["result"]:
+        data = await asyncio.wait_for(results.next(), timeout=12)
+        for result in data.get("result", []):
             title = result["title"]
             duration_min = result["duration"]
             vidid = result["id"]
@@ -1175,7 +1184,9 @@ class YouTubeAPI:
                 "duration_min": duration_min,
                 "thumb": thumbnail,
             }
+            _mem_cache_set(("search", cache_key), track_details)
             return track_details, vidid
+        raise ValueError("No YouTube search result found")
 
     async def formats(self, link: str, videoid: Union[bool, str] = None):
         if videoid:
