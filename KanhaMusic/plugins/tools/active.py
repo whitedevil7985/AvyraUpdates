@@ -1,158 +1,132 @@
 import asyncio
+import html
 import logging
 import time
 
 from pyrogram import filters
+from pyrogram.enums import ParseMode
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
-from unidecode import unidecode
 
 from KanhaMusic import ayush
 from KanhaMusic.misc import SUDOERS
-from KanhaMusic.utils.database import (
-    get_active_chats,
-    get_active_video_chats,
-    get_lang,
-    remove_active_chat,
-    remove_active_video_chat,
-)
-from strings import get_string
+from KanhaMusic.utils.database import get_active_chats, get_active_video_chats
 
 LOGGER = logging.getLogger(__name__)
-
-FETCH_CONCURRENCY = 15
-DISPLAY_LIMIT = 60
 REFRESH_COOLDOWN = 5
-
-_gate = asyncio.Semaphore(FETCH_CONCURRENCY)
 _last_refresh = {}
 
 
-async def _lang(chat_id):
-    return get_string(await get_lang(chat_id))
+async def _active_ids(kind):
+    # Read the tracker directly. Chat metadata is optional and must never
+    # decide whether a currently tracked voice chat is counted.
+    ids = await (get_active_chats() if kind == "vc" else get_active_video_chats())
+    return sorted(set(int(chat_id) for chat_id in (ids or [])))
 
 
-async def _resolve(chat_id, drop):
-    # Do not remove a playing chat just because the bot account cannot
-    # resolve its title (for example, when only an assistant is in the VC).
-    async with _gate:
-        try:
-            chat = await ayush.get_chat(chat_id)
-            title = unidecode((getattr(chat, "title", None) or str(chat_id)).strip()).upper()
-            return {
-                "id": chat_id,
-                "title": title or str(chat_id),
-                "username": getattr(chat, "username", None),
-            }
-        except Exception:
-            LOGGER.warning(
-                "Could not resolve active music chat metadata for chat_id=%s; "
-                "keeping it in the active VC count.",
-                chat_id,
-                exc_info=True,
-            )
-            return {"id": chat_id, "title": str(chat_id), "username": None}
+async def _chat_line(index, chat_id):
+    try:
+        chat = await ayush.get_chat(chat_id)
+        title = html.escape((getattr(chat, "title", None) or str(chat_id)).strip())
+        username = getattr(chat, "username", None)
+        if username:
+            title = f'<a href="https://t.me/{html.escape(username)}">{title}</a>'
+    except Exception as exc:
+        LOGGER.warning("Active chat title lookup failed for %s: %s", chat_id, exc)
+        title = f"Chat {chat_id}"
+    return f"{index}. {title} <code>{chat_id}</code>"
 
 
-async def _resolve_all(chat_ids, drop):
-    tasks = [asyncio.ensure_future(_resolve(cid, drop)) for cid in chat_ids]
-    resolved = await asyncio.gather(*tasks) if tasks else []
-    return [r for r in resolved if r]
-
-
-def _entry_line(index, chat):
-    label = f"{index}. {chat['title']}"
-    if chat["username"]:
-        line = f'<a href="https://t.me/{chat["username"]}">{label}</a>'
-    else:
-        line = label
-    return f"{line}  <code>{chat['id']}</code>"
-
-
-def _build_caption(_, kind_label, chats, elapsed):
-    if not chats:
-        return _["ACTIVE_EMPTY"].format(kind_label, ayush.mention)
-    shown = chats[:DISPLAY_LIMIT]
-    body = "\n".join(_entry_line(i, chat) for i, chat in enumerate(shown, start=1))
-    remaining = len(chats) - len(shown)
-    if remaining > 0:
-        body += "\n\n" + _["ACTIVE_MORE"].format(remaining)
-    return _["ACTIVE_LIST"].format(kind_label, len(chats), ayush.mention, body, elapsed)
-
-
-def _controls(_, kind):
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(text=_["ACTIVE_BTN_REFRESH"], callback_data=f"ACTIVE r|{kind}"),
-                InlineKeyboardButton(text=_["ACTIVE_BTN_CLOSE"], callback_data="ACTIVE x"),
-            ]
-        ]
-    )
-
-
-async def _fetch(kind):
-    if kind == "vc":
-        chat_ids = await get_active_chats()
-        chats = await _resolve_all(chat_ids, remove_active_chat)
-    else:
-        chat_ids = await get_active_video_chats()
-        chats = await _resolve_all(chat_ids, remove_active_video_chat)
-    return chats
-
-
-async def _render(_, kind, message):
-    label = _["ACTIVE_KIND_VOICE"] if kind == "vc" else _["ACTIVE_KIND_VIDEO"]
+async def _render(kind, message):
     started = time.monotonic()
-    chats = await _fetch(kind)
-    elapsed = round(time.monotonic() - started, 2)
-    caption = _build_caption(_, label, chats, elapsed)
+    chat_ids = await _active_ids(kind)
+    label = "voice chats" if kind == "vc" else "video chats"
+
+    if not chat_ids:
+        text = f"<b>Active {label}: 0</b>\n\nNo sessions are currently tracked by this bot process."
+    else:
+        lines = await asyncio.gather(
+            *(_chat_line(i, chat_id) for i, chat_id in enumerate(chat_ids, 1))
+        )
+        text = (
+            f"<b>Active {label}: {len(chat_ids)}</b>\n\n"
+            + "\n".join(lines[:60])
+        )
+        if len(lines) > 60:
+            text += f"\n\nAnd {len(lines) - 60} more chats."
+
+    text += f"\n\n<code>Fetched in {time.monotonic() - started:.2f}s</code>"
+    keyboard = InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton("🔄 Refresh", callback_data=f"ACTIVE r|{kind}"),
+            InlineKeyboardButton("✖️ Close", callback_data="ACTIVE x"),
+        ]]
+    )
     return await message.edit_text(
-        caption,
-        reply_markup=_controls(_, kind),
+        text,
+        reply_markup=keyboard,
+        parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )
 
 
 async def _launch(message: Message, kind):
-    _ = await _lang(message.chat.id)
-    loading = await message.reply_text(_["ACTIVE_LOADING"])
+    loading = await message.reply_text("⏳ Fetching active voice chats...")
     try:
-        await _render(_, kind, loading)
-    except Exception:
+        await _render(kind, loading)
+    except Exception as exc:
         LOGGER.exception("Active %s chat report failed", kind)
+        # Show the actual failure to the authorized operator instead of
+        # masking every exception behind the same generic message.
+        detail = html.escape(f"{type(exc).__name__}: {exc}")[:700]
         try:
-            await loading.edit_text(_["ACTIVE_FAILED"])
+            await loading.edit_text(
+                f"<b>Active chat report failed.</b>\n<code>{detail}</code>",
+                parse_mode=ParseMode.HTML,
+            )
         except Exception:
             pass
 
 
-@ayush.on_message(filters.command(["activevc", "activevoice", "activechats", "avc", "ac"]) & SUDOERS)
+@ayush.on_message(
+    filters.command(["activevc", "activevoice", "activechats", "avc", "ac"])
+    & SUDOERS
+)
 async def activevc(client, message: Message):
     await _launch(message, "vc")
 
 
-@ayush.on_message(filters.command(["activev", "activevideo", "activevideos", "avideo", "av"]) & SUDOERS)
+@ayush.on_message(
+    filters.command(["activev", "activevideo", "activevideos", "avideo", "av"])
+    & SUDOERS
+)
 async def activevi_(client, message: Message):
     await _launch(message, "video")
 
 
 @ayush.on_callback_query(filters.regex(r"^ACTIVE ") & SUDOERS)
 async def active_callback(client, cq):
-    _ = await _lang(cq.message.chat.id)
-    action, _sep, kind = cq.data.split(" ", 1)[1].partition("|")
+    action, _, kind = cq.data.split(" ", 1)[1].partition("|")
     if action == "x":
         await cq.answer()
         return await cq.message.delete()
-    if action != "r":
-        return await cq.answer()
+    if action != "r" or kind not in ("vc", "video"):
+        return await cq.answer("Invalid refresh request.", show_alert=True)
+
     key = (cq.message.chat.id, cq.message.id)
     now = time.monotonic()
     if now - _last_refresh.get(key, 0) < REFRESH_COOLDOWN:
-        return await cq.answer(_["ACTIVE_WAIT"], show_alert=False)
+        return await cq.answer("Please wait a few seconds before refreshing.", show_alert=False)
     _last_refresh[key] = now
-    await cq.answer(_["ACTIVE_REFRESHING"])
+    await cq.answer("Refreshing...")
     try:
-        await _render(_, kind, cq.message)
-    except Exception:
+        await _render(kind, cq.message)
+    except Exception as exc:
         LOGGER.exception("Active %s chat refresh failed", kind)
-        await cq.answer(_["ACTIVE_FAILED"], show_alert=True)
+        detail = html.escape(f"{type(exc).__name__}: {exc}")[:700]
+        try:
+            await cq.message.edit_text(
+                f"<b>Active chat refresh failed.</b>\n<code>{detail}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            pass
