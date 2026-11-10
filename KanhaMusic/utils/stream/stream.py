@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import config
 from KanhaMusic import Carbon, YouTube, ayush
+from KanhaMusic.platforms.Youtube import get_stream
 from KanhaMusic.core.call import Kanha
 from KanhaMusic.misc import db
 from KanhaMusic.utils.database import add_active_video_chat, is_active_chat
@@ -22,13 +23,28 @@ from KanhaMusic.utils.thumbnails import get_thumb
 
 
 async def _fetch(_, chat_id, vidid, mystic, video):
+    # Resolve a playable URL first instead of downloading the entire song
+    # before playback. PyTgCalls/FFmpeg can consume the remote media URL.
     status = True if video else None
-    task = asyncio.ensure_future(
-        YouTube.download(vidid, mystic, videoid=True, video=status)
-    )
     await Kanha.await_prejoin(chat_id)
+
+    if not video:
+        watch_url = f"https://www.youtube.com/watch?v={vidid}"
+        try:
+            stream_url = await asyncio.wait_for(get_stream(watch_url), timeout=18)
+            if stream_url:
+                return stream_url, False
+        except asyncio.TimeoutError:
+            pass
+        except Exception:
+            pass
+
+    # Keep the existing local-download route as a compatibility fallback
+    # (and for video playback, which has separate format requirements).
     try:
-        file_path, direct = await task
+        file_path, direct = await YouTube.download(
+            vidid, mystic, videoid=True, video=status
+        )
     except Exception:
         file_path, direct = None, False
     if not file_path:
