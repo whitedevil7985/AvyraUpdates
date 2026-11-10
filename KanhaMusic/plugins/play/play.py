@@ -10,7 +10,6 @@ from KanhaMusic import Apple, Resso, SoundCloud, Spotify, Telegram, YouTube, ayu
 from KanhaMusic.core.call import Kanha
 from KanhaMusic.utils import seconds_to_min, time_to_seconds
 from KanhaMusic.utils.channelplay import get_channeplayCB
-from KanhaMusic.utils.database import is_active_chat
 from KanhaMusic.utils.decorators.language import languageCB
 from KanhaMusic.utils.decorators.play import PlayWrapper
 from KanhaMusic.utils.formatters import formats
@@ -55,32 +54,18 @@ async def play_commnd(
     url,
     fplay,
 ):
-    early = False
-    if await _wants_prejoin(message, chat_id, playmode, url):
-        early = await Kanha.prejoin_start(chat_id, video=bool(video))
-    try:
-        await _play_flow(
-            client,
-            message,
-            _,
-            chat_id,
-            video,
-            channel,
-            playmode,
-            url,
-            fplay,
-        )
-    finally:
-        if early:
-            try:
-                await Kanha.prejoin_settle(chat_id)
-            except Exception:
-                pass
-
-
-async def _wants_prejoin(message, chat_id, playmode, url):
-    # Start joining the voice chat while the play request is being resolved.
-    return not await is_active_chat(chat_id)
+    # Resolve the track and prepare its audio source before joining the voice chat.
+    await _play_flow(
+        client,
+        message,
+        _,
+        chat_id,
+        video,
+        channel,
+        playmode,
+        url,
+        fplay,
+    )
 
 
 async def _play_flow(
@@ -492,19 +477,10 @@ async def play_music(client, CallbackQuery, _):
     except:
         pass
 
-    early = False
-    if not await is_active_chat(chat_id):
-        early = await Kanha.prejoin_start(chat_id, video=(mode == "v"))
-    try:
-        await _play_music_flow(
-            _, CallbackQuery, vidid, mode, cplay, fplay, chat_id, channel, user_name
-        )
-    finally:
-        if early:
-            try:
-                await Kanha.prejoin_settle(chat_id)
-            except Exception:
-                pass
+    # Join only after YouTube has resolved the playable audio source.
+    await _play_music_flow(
+        _, CallbackQuery, vidid, mode, cplay, fplay, chat_id, channel, user_name
+    )
 
 
 async def _play_music_flow(
