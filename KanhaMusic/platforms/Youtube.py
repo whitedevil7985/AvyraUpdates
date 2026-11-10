@@ -464,49 +464,65 @@ async def get_stream(url: str, cookies: str | None = None, skip_api: bool = Fals
                 _mem_cache_set(("audio", url), cached)
                 return cached
 
-    # [1] Primary: Inflex API (@InflexAPIBot)
-    if INFLEX_API_KEY and INFLEX_API_URL and not skip_api:
+    # Resolve configured API providers concurrently. Sequential provider calls
+    # made every failed request add its full timeout to the song start delay.
+    async def _nub_audio():
+        if not (YT_API_TOKEN and BASE_URL) or _api_breaker_open() or skip_api:
+            return None
         try:
-            stream = await _inflex_api_get_stream(url, is_video=False, timeout=5)
-            stream = normalize_media_url(stream)
-            if stream:
-                _mem_cache_set(("audio", url), stream)
-                await _write_cache(url, stream, prefix="audio_")
-                return stream
-        except Exception:
-            pass
-
-    # [2] Secondary: Ritesh API
-    if API_KEY and API_URL and not skip_api:
-        try:
-            stream = await _ritesh_api_get_stream(url, is_video=False, timeout=5)
-            stream = normalize_media_url(stream)
-            if stream:
-                _mem_cache_set(("audio", url), stream)
-                await _write_cache(url, stream, prefix="audio_")
-                return stream
-        except Exception:
-            pass
-
-    # [3] Tertiary: NUB API /info
-    if YT_API_TOKEN and BASE_URL and not _api_breaker_open() and not skip_api:
-        try:
-            resp = await get_http_client().get(
-                f"{BASE_URL}/info",
-                params={"q": url},
-                headers={"Authorization": f"Bearer {YT_API_TOKEN}"},
+            resp = await asyncio.wait_for(
+                get_http_client().get(
+                    f"{BASE_URL}/info",
+                    params={"q": url},
+                    headers={"Authorization": f"Bearer {YT_API_TOKEN}"},
+                ),
+                timeout=5,
             )
             if resp.status_code == 200:
                 data = resp.json()
-                stream = normalize_media_url(data.get("stream_url"))
-                if stream:
+                stream_url = normalize_media_url(data.get("stream_url"))
+                if stream_url:
                     _api_record_success()
-                    _mem_cache_set(("audio", url), stream)
-                    await _write_cache(url, stream, prefix="audio_")
-                    return stream
+                    return stream_url
             _api_record_failure()
         except Exception:
             _api_record_failure()
+        return None
+
+    providers = []
+    if INFLEX_API_KEY and INFLEX_API_URL and not skip_api:
+        providers.append(_inflex_api_get_stream(url, is_video=False, timeout=5))
+    if API_KEY and API_URL and not skip_api:
+        providers.append(_ritesh_api_get_stream(url, is_video=False, timeout=5))
+    if YT_API_TOKEN and BASE_URL and not skip_api:
+        providers.append(_nub_audio())
+
+    if providers:
+        tasks = {asyncio.create_task(provider) for provider in providers}
+        try:
+            while tasks:
+                done, tasks = await asyncio.wait(
+                    tasks, timeout=5, return_when=asyncio.FIRST_COMPLETED
+                )
+                if not done:
+                    break
+                for task in done:
+                    try:
+                        stream_url = normalize_media_url(task.result())
+                    except Exception:
+                        stream_url = None
+                    if stream_url:
+                        for pending in tasks:
+                            pending.cancel()
+                        await asyncio.gather(*tasks, return_exceptions=True)
+                        _mem_cache_set(("audio", url), stream_url)
+                        await _write_cache(url, stream_url, prefix="audio_")
+                        return stream_url
+        finally:
+            for pending in tasks:
+                pending.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     # [4] Fallback to yt-dlp
     stream = await _run_yt_dlp(url, "bestaudio[ext=m4a]/bestaudio/best", cookies)
