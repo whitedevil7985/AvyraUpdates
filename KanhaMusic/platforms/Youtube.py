@@ -480,6 +480,7 @@ async def get_stream(url: str, cookies: str | None = None, skip_api: bool = Fals
     if API_KEY and API_URL and not skip_api:
         try:
             stream = await _ritesh_api_get_stream(url, is_video=False, timeout=12)
+            stream = normalize_media_url(stream)
             if stream:
                 _mem_cache_set(("audio", url), stream)
                 await _write_cache(url, stream, prefix="audio_")
