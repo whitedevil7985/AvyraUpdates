@@ -495,7 +495,7 @@ async def _inflex_api_get_stream(link: str, is_video: bool = False, timeout: int
             if isinstance(data, dict) and str(data.get("status", "success")).lower() not in ("error", "failed", "failure"):
                 return _extract_provider_url(data, "video" if is_video else "audio")
             return _extract_provider_url(data, "video" if is_video else "audio")
-        logger.warning("Inflex API returned HTTP %s", resp.status_code)
+        logger.warning("Inflex API returned HTTP %s; check INFLEX_API_URL/service status", resp.status_code)
     except Exception as exc:
         logger.warning("Inflex API request failed: %s", type(exc).__name__)
     return None
@@ -539,7 +539,7 @@ async def _ritesh_api_get_stream(link: str, is_video: bool = False, timeout: int
                     return None
             # Some download APIs return the final media URL as plain text.
             return _extract_provider_url(resp.text, "video" if is_video else "audio")
-        logger.warning("Ritesh API returned HTTP %s", resp.status_code)
+        logger.warning("Ritesh API returned HTTP %s; for 401 set a valid RITESH_API_KEY", resp.status_code)
     except Exception as exc:
         logger.warning("Ritesh API request failed: %s", type(exc).__name__)
     return None
@@ -564,7 +564,13 @@ async def get_stream(url: str, cookies: str | None = None, skip_api: bool = Fals
     # Resolve configured API providers concurrently. Sequential provider calls
     # made every failed request add its full timeout to the song start delay.
     async def _nub_audio():
-        if not (YT_API_TOKEN and BASE_URL) or _api_breaker_open() or skip_api:
+        if skip_api:
+            return None
+        if not YT_API_TOKEN or not BASE_URL:
+            logger.info("NUB API disabled: set YT_API_TOKEN and NUB_YT_API_BASE_URL")
+            return None
+        if _api_breaker_open():
+            logger.info("NUB API temporarily skipped after repeated failures")
             return None
         try:
             resp = await asyncio.wait_for(
@@ -584,6 +590,10 @@ async def get_stream(url: str, cookies: str | None = None, skip_api: bool = Fals
                 if stream_url:
                     _api_record_success()
                     return stream_url
+                if isinstance(data, dict):
+                    logger.warning("NUB API HTTP 200 but no media URL; response keys=%s", sorted(data.keys())[:20])
+                else:
+                    logger.warning("NUB API HTTP 200 but response contained no direct media URL")
             else:
                 logger.warning("NUB API returned HTTP %s", resp.status_code)
             _api_record_failure()
