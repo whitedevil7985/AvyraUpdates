@@ -207,8 +207,44 @@ class Call(PyTgCalls):
 
     async def await_prejoin(self, chat_id: int):
         task = self._prejoin_tasks.get(chat_id)
-        if task is not None:
-            await asyncio.shield(task)
+        if task is None:
+            return
+
+        try:
+            # A stalled assistant join must never hold /play in the loading
+            # state forever. The regular join path can recover after cleanup.
+            await asyncio.wait_for(asyncio.shield(task), timeout=12)
+        except asyncio.TimeoutError:
+            LOGGER(__name__).warning(
+                "Assistant pre-join timed out for chat %s; switching to normal join",
+                chat_id,
+            )
+            if self._prejoin_tasks.get(chat_id) is task:
+                self._prejoin_tasks.pop(chat_id, None)
+                self._prejoin_video.pop(chat_id, None)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            try:
+                assistant = await asyncio.wait_for(group_assistant(self, chat_id), timeout=4)
+                await asyncio.wait_for(assistant.leave_group_call(chat_id), timeout=4)
+            except Exception:
+                pass
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            LOGGER(__name__).warning(
+                "Assistant pre-join failed for chat %s: %s; switching to normal join",
+                chat_id,
+                exc,
+            )
+            if self._prejoin_tasks.get(chat_id) is task:
+                self._prejoin_tasks.pop(chat_id, None)
+                self._prejoin_video.pop(chat_id, None)
+            try:
+                assistant = await asyncio.wait_for(group_assistant(self, chat_id), timeout=4)
+                await asyncio.wait_for(assistant.leave_group_call(chat_id), timeout=4)
+            except Exception:
+                pass
 
     async def prejoin_settle(self, chat_id: int):
         async with self.chat_lock(chat_id):
