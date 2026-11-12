@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import logging
+import sys
 import hashlib
 import json
 import random
@@ -384,7 +385,7 @@ def _provider_stream(data: dict, mode: str) -> str | None:
 
 async def _run_yt_dlp(url: str, format_selector: str, cookies: str | None) -> str | None:
     cmd = [
-        "yt-dlp",
+        sys.executable, "-m", "yt_dlp",
         "--js-runtimes", "node",
         "--remote-components", "ejs:github",
         "-f", format_selector,
@@ -786,7 +787,7 @@ async def export_browser_cookies():
     browsers = [b for b in re.split(r"[,\s]+", COOKIES_FROM_BROWSER or "") if b]
     for browser in browsers:
         cmd = [
-            "yt-dlp",
+            sys.executable, "-m", "yt_dlp",
             "--cookies-from-browser", browser,
             "--cookies", YT_COOKIES_FILE,
             "--skip-download",
@@ -867,11 +868,12 @@ async def _ytdlp_download(link: str, is_video: bool, out_path: str) -> str | Non
     # challenge solver. The Heroku/Docker setup already provides Node.js.
     fmt = "bestvideo[height<=720]+bestaudio/best[height<=720]" if is_video else "bestaudio[ext=m4a]/bestaudio/best"
     cmd = [
-        "yt-dlp",
+        sys.executable, "-m", "yt_dlp",
         "--js-runtimes", "node",
         "--remote-components", "ejs:github",
         "--no-warnings",
         "--no-playlist",
+        "--extractor-args", "youtube:player_client=android,web",
         "--retries", "2",
         "--fragment-retries", "2",
         "--socket-timeout", "20",
@@ -881,6 +883,8 @@ async def _ytdlp_download(link: str, is_video: bool, out_path: str) -> str | Non
     ]
     if YT_COOKIES_FILE and os.path.exists(YT_COOKIES_FILE):
         cmd.extend(["--cookies", YT_COOKIES_FILE])
+    else:
+        logger.warning("No YouTube cookies configured; set YT_COOKIES_BASE64 in Heroku Config Vars")
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
