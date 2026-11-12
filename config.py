@@ -46,7 +46,7 @@ GIT_TOKEN = getenv("GIT_TOKEN")
 # [1] INFLEX API SETTINGS (@InflexAPIBot) [PRIMARY]
 # ──────────────────────────────────────────────────────────────────────────────
 # Inflex API Key:
-INFLEX_API_KEY = getenv("INFLEX_API_KEY") or "INFLEX55158228D"
+INFLEX_API_KEY = getenv("INFLEX_API_KEY", "")
 
 # Inflex API Base URL (Default: http://187.127.120.51):
 _raw_inflex = getenv("INFLEX_API_URL") or "http://187.127.120.51"
@@ -61,7 +61,7 @@ INFLEX_API_URL = _domain_inflex.rstrip("/") if _domain_inflex else "http://187.1
 # [2] RITESH API SETTINGS [SECONDARY]
 # ──────────────────────────────────────────────────────────────────────────────
 # Ritesh API Key:
-RITESH_API_KEY = getenv("RITESH_API_KEY") or getenv("API_KEY") or "riteshfree7a13156394b9c397822c0006"
+RITESH_API_KEY = getenv("RITESH_API_KEY") or getenv("API_KEY") or ""
 API_KEY = RITESH_API_KEY
 
 # Ritesh API Base URL (Default: https://api.riteshyt.in):
@@ -72,7 +72,7 @@ API_URL = RITESH_API_URL
 # [3] NUB API SETTINGS [TERTIARY]
 # ──────────────────────────────────────────────────────────────────────────────
 # NUB API Token / Key:
-YTUBE_API_TOKEN = getenv("YTUBE_API_TOKEN") or getenv("YT_API_TOKEN") or "c8t5JHzIKs"
+YTUBE_API_TOKEN = getenv("YTUBE_API_TOKEN") or getenv("YT_API_TOKEN") or ""
 YT_API_TOKEN = YTUBE_API_TOKEN
 
 # NUB API Base URL (Default: https://api.nubcoders.com):
