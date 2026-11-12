@@ -208,9 +208,7 @@ async def del_back_playlist(client, CallbackQuery, _):
                     await auto_clean(popped)
                 if not check:
                     await CallbackQuery.edit_message_text(
-                        txt + "\n\n" + _["admin_6"].format(
-                            mention, CallbackQuery.message.chat.title
-                        ),
+                        f"⏭ <b>Skipped</b> by {mention}\nQueue empty in <b>{CallbackQuery.message.chat.title}</b> · Leaving video chat.",
                         reply_markup=close_markup(_),
                     )
                     try:
@@ -220,9 +218,7 @@ async def del_back_playlist(client, CallbackQuery, _):
             except:
                 try:
                     await CallbackQuery.edit_message_text(
-                        txt + "\n\n" + _["admin_6"].format(
-                            mention, CallbackQuery.message.chat.title
-                        ),
+                        f"⏭ <b>Skipped</b> by {mention}\nQueue empty in <b>{CallbackQuery.message.chat.title}</b> · Leaving video chat.",
                         reply_markup=close_markup(_),
                     )
                     return await Kanha.stop_stream(chat_id)
