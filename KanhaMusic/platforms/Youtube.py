@@ -1043,11 +1043,15 @@ async def _race_download(link: str, is_video: bool = False) -> str | None:
     # per-request timeout. Cap the whole provider race so /play can recover
     # instead of leaving the chat on the loading/search animation.
     race_deadline = 38 if not is_video else 48
+    deadline = asyncio.get_running_loop().time() + race_deadline
     try:
         while tasks:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
             done, pending = await asyncio.wait(
                 tasks,
-                timeout=race_deadline,
+                timeout=remaining,
                 return_when=asyncio.FIRST_COMPLETED,
             )
             tasks = list(pending)
@@ -1060,11 +1064,9 @@ async def _race_download(link: str, is_video: bool = False) -> str | None:
                     res = None
                 if res and os.path.exists(res) and os.path.getsize(res) > 10000:
                     winner_file = res
-                    # Cancel the remaining slower tasks immediately.
-                    for p in tasks:
-                        p.cancel()
-                    tasks.clear()
                     break
+            if winner_file:
+                break
     finally:
         for pending_task in tasks:
             pending_task.cancel()
