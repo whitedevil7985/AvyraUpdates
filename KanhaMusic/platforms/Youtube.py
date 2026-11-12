@@ -371,16 +371,56 @@ def get_random_key():
 
 
 # ── NUB API & yt-dlp Core Stream Resolution ─────────────────────────────────────
+def _extract_provider_url(data, mode: str = "audio") -> str | None:
+    """Read common direct-media URL shapes returned by third-party APIs."""
+    if isinstance(data, str):
+        return normalize_media_url(data)
+    if isinstance(data, list):
+        for item in data:
+            found = _extract_provider_url(item, mode)
+            if found:
+                return found
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    # Prefer mode-specific keys, then common download/stream aliases.
+    keys = (
+        ("audio_url", "audio", "stream_url", "download_url", "download", "url", "link", "file")
+        if mode == "audio"
+        else ("video_url", "video", "stream_url", "download_url", "download", "url", "link", "file")
+    )
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, str):
+            found = normalize_media_url(value)
+            if found:
+                return found
+
+    # APIs often wrap the actual result inside data/result/response.
+    for key in ("data", "result", "response", "media", "formats", "links"):
+        value = data.get(key)
+        if isinstance(value, (dict, list)):
+            found = _extract_provider_url(value, mode)
+            if found:
+                return found
+    return None
+
+
 def _provider_stream(data: dict, mode: str) -> str | None:
-    if mode == "audio":
-        return data.get("stream_url")
-    formats = data.get("formats") or []
-    if data.get("vcodec") == "none" or data.get("acodec") == "none":
+    if not isinstance(data, dict):
         return None
-    available_formats = [item for item in formats if item.get("url")]
-    if available_formats and all(item.get("vcodec") == "none" or item.get("acodec") == "none" for item in available_formats):
-        return None
-    return data.get("stream_url")
+    if mode == "video":
+        formats = data.get("formats") or []
+        if data.get("vcodec") == "none" or data.get("acodec") == "none":
+            return None
+        available_formats = [item for item in formats if isinstance(item, dict) and item.get("url")]
+        if available_formats and all(
+            item.get("vcodec") == "none" or item.get("acodec") == "none"
+            for item in available_formats
+        ):
+            return None
+    return _extract_provider_url(data, mode)
 
 
 async def _run_yt_dlp(url: str, format_selector: str, cookies: str | None) -> str | None:
@@ -441,16 +481,23 @@ async def _inflex_api_get_stream(link: str, is_video: bool = False, timeout: int
             json=payload,
             headers=headers,
             timeout=timeout,
+            follow_redirects=False,
         )
+        if resp.status_code in (301, 302, 303, 307, 308):
+            location = resp.headers.get("location")
+            if location:
+                return normalize_media_url(location if location.startswith(("http://", "https://")) else f"{base}/{location.lstrip('/')}")
         if resp.status_code == 200:
-            data = resp.json()
-            if data.get("status") == "success":
-                if is_video:
-                    return data.get("video_url") or data.get("stream_url") or data.get("audio_url")
-                else:
-                    return data.get("audio_url") or data.get("stream_url")
-    except Exception:
-        pass
+            try:
+                data = resp.json()
+            except Exception:
+                data = resp.text
+            if isinstance(data, dict) and str(data.get("status", "success")).lower() not in ("error", "failed", "failure"):
+                return _extract_provider_url(data, "video" if is_video else "audio")
+            return _extract_provider_url(data, "video" if is_video else "audio")
+        logger.warning("Inflex API returned HTTP %s", resp.status_code)
+    except Exception as exc:
+        logger.warning("Inflex API request failed: %s", type(exc).__name__)
     return None
 
 
@@ -482,21 +529,19 @@ async def _ritesh_api_get_stream(link: str, is_video: bool = False, timeout: int
         if resp.status_code in (301, 302, 303, 307, 308):
             loc = resp.headers.get("location")
             if loc:
-                if loc.startswith("http://") or loc.startswith("https://"):
-                    return loc
-                return f"{api_url.rstrip('/')}/{loc.lstrip('/')}"
+                return normalize_media_url(loc if loc.startswith(("http://", "https://")) else f"{api_url.rstrip('/')}/{loc.lstrip('/')}")
         elif resp.status_code == 200:
-            ctype = resp.headers.get("Content-Type", "")
-            if "application/json" in ctype:
-                data = resp.json()
-                return (
-                    data.get("url")
-                    or data.get("download_url")
-                    or data.get("link")
-                    or (data.get("data") or {}).get("url")
-                )
-    except Exception:
-        pass
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if "json" in ctype:
+                try:
+                    return _extract_provider_url(resp.json(), "video" if is_video else "audio")
+                except Exception:
+                    return None
+            # Some download APIs return the final media URL as plain text.
+            return _extract_provider_url(resp.text, "video" if is_video else "audio")
+        logger.warning("Ritesh API returned HTTP %s", resp.status_code)
+    except Exception as exc:
+        logger.warning("Ritesh API request failed: %s", type(exc).__name__)
     return None
 
 
@@ -531,13 +576,19 @@ async def get_stream(url: str, cookies: str | None = None, skip_api: bool = Fals
                 timeout=5,
             )
             if resp.status_code == 200:
-                data = resp.json()
-                stream_url = normalize_media_url(data.get("stream_url"))
+                try:
+                    data = resp.json()
+                except Exception:
+                    data = resp.text
+                stream_url = _extract_provider_url(data, "audio")
                 if stream_url:
                     _api_record_success()
                     return stream_url
+            else:
+                logger.warning("NUB API returned HTTP %s", resp.status_code)
             _api_record_failure()
-        except Exception:
+        except Exception as exc:
+            logger.warning("NUB API request failed: %s", type(exc).__name__)
             _api_record_failure()
         return None
 
