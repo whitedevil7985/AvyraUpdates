@@ -1,1 +1,1 @@
-python3 -m KanhaMusic
+python3 -c "import sys; print('[BOOT] Python runtime:', sys.version)" && exec python3 -m KanhaMusic
