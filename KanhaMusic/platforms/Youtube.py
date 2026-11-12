@@ -863,11 +863,19 @@ async def _download_stream_url(stream_url: str, file_path: str, timeout: int = 9
 
 
 async def _ytdlp_download(link: str, is_video: bool, out_path: str) -> str | None:
+    # YouTube increasingly requires a JavaScript runtime and the EJS
+    # challenge solver. The Heroku/Docker setup already provides Node.js.
     fmt = "bestvideo[height<=720]+bestaudio/best[height<=720]" if is_video else "bestaudio[ext=m4a]/bestaudio/best"
     cmd = [
         "yt-dlp",
-        "-f", fmt,
+        "--js-runtimes", "node",
+        "--remote-components", "ejs:github",
+        "--no-warnings",
         "--no-playlist",
+        "--retries", "2",
+        "--fragment-retries", "2",
+        "--socket-timeout", "20",
+        "-f", fmt,
         "-o", out_path,
         link,
     ]
@@ -877,11 +885,19 @@ async def _ytdlp_download(link: str, is_video: bool, out_path: str) -> str | Non
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
-        await asyncio.wait_for(proc.communicate(), timeout=90)
+        _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
         if os.path.exists(out_path) and os.path.getsize(out_path) > 10000:
+            logger.info("yt-dlp download succeeded for %s (%s bytes)", _extract_id(link), os.path.getsize(out_path))
             return out_path
+        error_text = (stderr or b"").decode("utf-8", errors="replace").strip()
+        if error_text:
+            logger.warning("yt-dlp download failed for %s: %s", _extract_id(link), error_text[-1200:])
+        else:
+            logger.warning("yt-dlp download failed for %s (exit code %s)", _extract_id(link), proc.returncode)
+    except asyncio.TimeoutError:
+        logger.warning("yt-dlp download timed out for %s", _extract_id(link))
     except Exception:
-        pass
+        logger.exception("yt-dlp download crashed for %s", _extract_id(link))
     return None
 
 
@@ -991,6 +1007,7 @@ async def _race_download(link: str, is_video: bool = False) -> str | None:
     if os.path.exists(final_file) and os.path.getsize(final_file) > 10000:
         return final_file
 
+    logger.info("Starting %s download for YouTube track %s", "video" if is_video else "audio", video_id)
     watch_url = f"https://www.youtube.com/watch?v={video_id}"
     timeout = 90 if not is_video else 120
 
@@ -1061,10 +1078,13 @@ async def _race_download(link: str, is_video: bool = False) -> str | None:
                 try:
                     res = completed_task.result()
                 except Exception:
+                    logger.exception("YouTube provider worker %s crashed for %s", completed_task.get_name(), video_id)
                     res = None
                 if res and os.path.exists(res) and os.path.getsize(res) > 10000:
                     winner_file = res
+                    logger.info("YouTube provider %s supplied track %s", completed_task.get_name(), video_id)
                     break
+                logger.warning("YouTube provider %s returned no usable file for %s", completed_task.get_name(), video_id)
             if winner_file:
                 break
     finally:
@@ -1080,14 +1100,19 @@ async def _race_download(link: str, is_video: bool = False) -> str | None:
         except Exception:
             return winner_file
 
-    # Fallback Tier 3: yt-dlp download if all APIs failed
+    # Final fallback: yt-dlp with Node.js/EJS challenge support.
     try:
         res = await _ytdlp_download(watch_url, is_video=is_video, out_path=final_file)
-        if res and os.path.exists(res):
+        if res and os.path.exists(res) and os.path.getsize(res) > 10000:
             return res
     except Exception:
-        pass
+        logger.exception("Final yt-dlp fallback crashed for %s", video_id)
 
+    logger.error(
+        "All YouTube download providers failed for %s (Inflex=%s, Ritesh=%s, NUB=%s)",
+        video_id, bool(INFLEX_API_KEY and INFLEX_API_URL),
+        bool(API_KEY and API_URL), bool(YT_API_TOKEN and BASE_URL),
+    )
     return None
 
 
