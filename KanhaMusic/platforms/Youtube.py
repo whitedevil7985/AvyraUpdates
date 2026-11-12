@@ -1039,21 +1039,37 @@ async def _race_download(link: str, is_video: bool = False) -> str | None:
         tasks.append(asyncio.create_task(_nub_worker(), name="NUB_API"))
 
     winner_file = None
-    while tasks:
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        tasks = list(pending)
-        for completed_task in done:
-            try:
-                res = completed_task.result()
-            except Exception:
-                res = None
-            if res and os.path.exists(res) and os.path.getsize(res) > 10000:
-                winner_file = res
-                # Cancel the remaining slower tasks immediately
-                for p in tasks:
-                    p.cancel()
-                tasks.clear()
+    # Provider downloads can occasionally remain open until their long
+    # per-request timeout. Cap the whole provider race so /play can recover
+    # instead of leaving the chat on the loading/search animation.
+    race_deadline = 38 if not is_video else 48
+    try:
+        while tasks:
+            done, pending = await asyncio.wait(
+                tasks,
+                timeout=race_deadline,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            tasks = list(pending)
+            if not done:
                 break
+            for completed_task in done:
+                try:
+                    res = completed_task.result()
+                except Exception:
+                    res = None
+                if res and os.path.exists(res) and os.path.getsize(res) > 10000:
+                    winner_file = res
+                    # Cancel the remaining slower tasks immediately.
+                    for p in tasks:
+                        p.cancel()
+                    tasks.clear()
+                    break
+    finally:
+        for pending_task in tasks:
+            pending_task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     if winner_file and os.path.exists(winner_file):
         try:
