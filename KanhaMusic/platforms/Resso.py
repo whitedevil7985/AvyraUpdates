@@ -12,7 +12,7 @@ from py_yt import VideosSearch
 
 class RessoAPI:
     def __init__(self):
-        self.regex = r"^https?://(?:m\\.)?resso\\.com/.*$"
+        self.regex = r"^https?://(?:m\.)?resso\.com/.*$"
         self.base = "https://m.resso.com/"
 
     async def valid(self, link: str):
