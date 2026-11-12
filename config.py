@@ -92,7 +92,29 @@ NUB_YT_API_BASE_URL = YTUBE_API_BASE_URL
 YOUTUBE_API_KEYS = getenv("YOUTUBE_API_KEYS", "")
 
 # Cookies and Cache:
+# Heroku has no logged-in browser profile, so accept an exported Netscape
+# cookies file as a base64 config var (recommended) or raw multiline content.
 YT_COOKIES_FILE = getenv("YT_COOKIES_FILE", None)
+YT_COOKIES_BASE64 = getenv("YT_COOKIES_BASE64", "")
+YT_COOKIES_CONTENT = getenv("YT_COOKIES_CONTENT", "")
+if YT_COOKIES_BASE64 or YT_COOKIES_CONTENT:
+    import base64 as _base64
+    import os as _os
+    _cookie_path = YT_COOKIES_FILE or "/tmp/kanhamusic-youtube-cookies.txt"
+    try:
+        _cookie_bytes = (
+            _base64.b64decode(YT_COOKIES_BASE64, validate=True)
+            if YT_COOKIES_BASE64 else YT_COOKIES_CONTENT.encode("utf-8")
+        )
+        _cookie_text = _cookie_bytes.decode("utf-8-sig")
+        if "Netscape HTTP Cookie File" not in _cookie_text[:256]:
+            raise ValueError("YouTube cookies must be in Netscape cookies.txt format")
+        _fd = _os.open(_cookie_path, _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC, 0o600)
+        with _os.fdopen(_fd, "w", encoding="utf-8") as _cookie_file:
+            _cookie_file.write(_cookie_text)
+        YT_COOKIES_FILE = _cookie_path
+    except Exception as _cookie_error:
+        raise RuntimeError("Invalid YT_COOKIES_BASE64/YT_COOKIES_CONTENT; provide a valid Netscape cookies.txt export") from _cookie_error
 COOKIES_FROM_BROWSER = getenv("COOKIES_FROM_BROWSER", None)
 if COOKIES_FROM_BROWSER and not YT_COOKIES_FILE:
     import os as _os
