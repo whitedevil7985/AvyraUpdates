@@ -23,34 +23,26 @@ from KanhaMusic.utils.thumbnails import get_thumb
 
 
 async def _fetch(_, chat_id, vidid, mystic, video):
-    # Join the VC in parallel with metadata/search work, then resolve a
-    # remote audio stream first so playback does not wait for a full download.
-    await Kanha.await_prejoin(chat_id)
-
-    if not video:
-        watch_url = f"https://www.youtube.com/watch?v={vidid}"
-        try:
-            stream_url = await asyncio.wait_for(get_stream(watch_url), timeout=10)
-            stream_url = normalize_media_url(stream_url)
-            if stream_url:
-                return stream_url, True
-        except Exception:
-            pass
-
-    # Stable local-file fallback for video or unavailable stream providers.
+    # Prepare a complete local media file before joining the voice chat.
+    # Remote provider URLs can pass an HTTP probe but still be rejected later
+    # by PyTgCalls with NoAudioSourceFound, which cannot be caught by join_call.
     try:
-        file_path, direct = await YouTube.download(
+        file_path, _downloaded = await YouTube.download(
             vidid, mystic, videoid=True, video=True if video else None
         )
     except Exception:
-        file_path, direct = None, False
+        file_path = None
+
     if (
         not file_path
         or str(file_path).startswith(("http://", "https://"))
         or not os.path.isfile(file_path)
+        or os.path.getsize(file_path) <= 10000
     ):
         raise AssistantErr(_["play_14"])
-    return file_path, direct
+
+    # True means this exact prepared source can be retained in the queue.
+    return file_path, True
 
 
 async def _join_with_local_fallback(
@@ -61,7 +53,7 @@ async def _join_with_local_fallback(
         await Kanha.join_call(
             chat_id, original_chat_id, source, video=video, image=thumbnail
         )
-        return source, isinstance(source, str) and source.startswith(("http://", "https://"))
+        return source, True
     except Exception:
         if not isinstance(source, str) or not source.startswith(("http://", "https://")):
             raise
@@ -81,7 +73,7 @@ async def _join_with_local_fallback(
     await Kanha.join_call(
         chat_id, original_chat_id, local_path, video=video, image=thumbnail
     )
-    return local_path, False
+    return local_path, True
 
 
 async def _announce_queue(_, chat_id, original_chat_id, mystic, title, duration_min, user_name):
