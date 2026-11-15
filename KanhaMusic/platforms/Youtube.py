@@ -606,7 +606,7 @@ async def get_stream(url: str, cookies: str | None = None, skip_api: bool = Fals
     if INFLEX_API_KEY and INFLEX_API_URL and not skip_api:
         providers.append(_inflex_api_get_stream(url, is_video=False, timeout=3))
     if API_KEY and API_URL and not skip_api:
-        providers.append(_ritesh_api_get_stream(url, is_video=False, timeout=3))
+        providers.append(_ritesh_api_get_stream(url, is_video=False, timeout=12))
     if YT_API_TOKEN and BASE_URL and not skip_api:
         providers.append(_nub_audio())
 
@@ -615,7 +615,7 @@ async def get_stream(url: str, cookies: str | None = None, skip_api: bool = Fals
         try:
             while tasks:
                 done, tasks = await asyncio.wait(
-                    tasks, timeout=3, return_when=asyncio.FIRST_COMPLETED
+                    tasks, timeout=12, return_when=asyncio.FIRST_COMPLETED
                 )
                 if not done:
                     break
