@@ -245,6 +245,24 @@ def format_duration(seconds: int) -> str:
         return f"{h}:{m:02d}:{s:02d}"
     return f"{m:02d}:{s:02d}"
 
+def _duration_seconds(value) -> int:
+    """Normalize YouTube Data API ISO-8601 or clock durations to seconds."""
+    if value is None:
+        return 0
+    raw = str(value).strip()
+    if not raw or raw.lower() in {"none", "n/a"}:
+        return 0
+    if raw.startswith("P"):
+        match = re.fullmatch(
+            r"P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?",
+            raw,
+        )
+        if not match:
+            return 0
+        days, hours, minutes, seconds = match.groups()
+        return int(days or 0) * 86400 + int(hours or 0) * 3600 + int(minutes or 0) * 60 + int(float(seconds or 0))
+    return time_to_seconds(raw)
+
 
 def format_ind(n):
     try:
@@ -831,7 +849,7 @@ async def youtube_search(query: str, limit: int = 1):
             results.append({
                 "title": item["snippet"].get("title", ""),
                 "url": f"https://www.youtube.com/watch?v={vid}",
-                "duration": dur,
+                "duration": format_duration(_duration_seconds(dur)),
                 "channel_name": item["snippet"].get("channelTitle", ""),
                 "views": det.get("statistics", {}).get("viewCount", "0"),
                 "thumbnail": item["snippet"].get("thumbnails", {}).get("high", {}).get("url", ""),
@@ -1246,15 +1264,20 @@ class YouTubeAPI:
         except Exception:
             pass
 
-        # Fast path 2: VideosSearch
-        results = VideosSearch(link, limit=1)
-        for result in (await results.next())["result"]:
-            title = result["title"]
-            duration_min = result["duration"]
-            thumbnail = result["thumbnails"][0]["url"].split("?")[0]
-            vidid = result["id"]
-            duration_sec = int(time_to_seconds(duration_min)) if str(duration_min) != "None" else 0
-            return title, duration_min, duration_sec, thumbnail, vidid
+        # Search fallback chain: YouTube Data API -> py-yt -> yt-dlp.
+        try:
+            track, vidid = await self.track(link)
+            duration_min = track.get("duration_min") or "00:00"
+            return (
+                track.get("title") or "Unknown title",
+                duration_min,
+                _duration_seconds(duration_min),
+                track.get("thumb") or f"https://i.ytimg.com/vi/{vidid}/hqdefault.jpg",
+                vidid,
+            )
+        except Exception as exc:
+            logger.warning("YouTube details lookup failed for %s: %s", _extract_id(link), type(exc).__name__)
+            return None
 
     async def title(self, link: str, videoid: Union[bool, str] = None):
         if videoid:
@@ -1366,24 +1389,78 @@ class YouTubeAPI:
         if cached:
             return cached, cached["vidid"]
 
-        results = VideosSearch(link, limit=1)
-        data = await asyncio.wait_for(results.next(), timeout=15)
-        for result in data.get("result", []):
-            title = result["title"]
-            duration_min = result["duration"]
-            vidid = result["id"]
-            yturl = result["link"]
-            thumbnail = result["thumbnails"][0]["url"].split("?")[0]
-            track_details = {
-                "title": title,
-                "link": yturl,
-                "vidid": vidid,
-                "duration_min": duration_min,
-                "thumb": thumbnail,
-            }
-            _mem_cache_set(("search", cache_key), track_details)
-            return track_details, vidid
-        raise ValueError("No YouTube search result found")
+        # 1) YouTube Data API v3 (supports key rotation configured in YOUTUBE_API_KEYS).
+        try:
+            api_results = await asyncio.wait_for(youtube_search(link, limit=1), timeout=12)
+            if api_results:
+                item = api_results[0]
+                vidid = _extract_id(item.get("url") or "")
+                if vidid and item.get("title"):
+                    track_details = {
+                        "title": item["title"],
+                        "link": f"https://www.youtube.com/watch?v={vidid}",
+                        "vidid": vidid,
+                        "duration_min": item.get("duration") or "00:00",
+                        "thumb": item.get("thumbnail") or f"https://i.ytimg.com/vi/{vidid}/hqdefault.jpg",
+                    }
+                    _mem_cache_set(("search", cache_key), track_details)
+                    return track_details, vidid
+        except Exception as exc:
+            logger.warning("YouTube Data API search failed: %s", type(exc).__name__)
+
+        # 2) py-yt search fallback.
+        try:
+            results = VideosSearch(link, limit=1)
+            data = await asyncio.wait_for(results.next(), timeout=15)
+            for result in data.get("result", []):
+                vidid = result.get("id")
+                title = result.get("title")
+                if not vidid or not title:
+                    continue
+                thumbnails = result.get("thumbnails") or []
+                thumbnail = (thumbnails[0].get("url") if thumbnails else None) or f"https://i.ytimg.com/vi/{vidid}/hqdefault.jpg"
+                track_details = {
+                    "title": title,
+                    "link": result.get("link") or f"https://www.youtube.com/watch?v={vidid}",
+                    "vidid": vidid,
+                    "duration_min": result.get("duration") or "00:00",
+                    "thumb": thumbnail.split("?")[0],
+                }
+                _mem_cache_set(("search", cache_key), track_details)
+                return track_details, vidid
+        except Exception as exc:
+            logger.warning("py-yt search failed: %s", type(exc).__name__)
+
+        # 3) yt-dlp extractor/search fallback; run blocking extraction off the event loop.
+        try:
+            def _extract_search_result():
+                opts = {"quiet": True, "no_warnings": True, "skip_download": True, "extract_flat": "in_playlist"}
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    target = link if re.search(r"(youtube\.com|youtu\.be)/", link, re.I) else f"ytsearch1:{link}"
+                    info = ydl.extract_info(target, download=False)
+                    if info and info.get("entries") is not None:
+                        info = next((entry for entry in info.get("entries") or [] if entry), None)
+                    return info
+            info = await asyncio.wait_for(asyncio.to_thread(_extract_search_result), timeout=20)
+            vidid = (info or {}).get("id")
+            title = (info or {}).get("title")
+            if vidid and title:
+                duration_min = format_duration(int((info or {}).get("duration") or 0))
+                thumbnails = (info or {}).get("thumbnails") or []
+                thumbnail = (thumbnails[-1].get("url") if thumbnails else None) or f"https://i.ytimg.com/vi/{vidid}/hqdefault.jpg"
+                track_details = {
+                    "title": title,
+                    "link": (info or {}).get("webpage_url") or f"https://www.youtube.com/watch?v={vidid}",
+                    "vidid": vidid,
+                    "duration_min": duration_min,
+                    "thumb": thumbnail.split("?")[0],
+                }
+                _mem_cache_set(("search", cache_key), track_details)
+                return track_details, vidid
+        except Exception as exc:
+            logger.warning("yt-dlp search fallback failed: %s", type(exc).__name__)
+
+        raise ValueError("All YouTube search providers failed to return track details")
 
     async def formats(self, link: str, videoid: Union[bool, str] = None):
         if videoid:
