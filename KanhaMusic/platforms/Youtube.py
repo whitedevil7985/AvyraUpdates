@@ -811,52 +811,62 @@ async def get_video_info(query: str, max_results: int = 1, mode: str = "audio") 
 async def youtube_search(query: str, limit: int = 1):
     if is_direct_stream_url(query) or not YOUTUBE_API_KEYS:
         return []
-    api_key = get_random_key()
-    if not api_key:
-        return []
     client = get_http_client()
-    try:
-        search_params = {
-            "part": "snippet",
-            "q": query,
-            "maxResults": limit,
-            "type": "video",
-            "key": api_key,
-        }
-        search_res = await client.get(SEARCH_URL, params=search_params)
-        if search_res.status_code != 200:
-            return []
-        items = search_res.json().get("items", [])
-        video_ids = [item["id"]["videoId"] for item in items if "videoId" in item.get("id", {})]
-        if not video_ids:
-            return []
-        details_params = {
-            "part": "contentDetails,statistics",
-            "id": ",".join(video_ids),
-            "key": get_random_key() or api_key,
-        }
-        detail_res = await client.get(DETAILS_URL, params=details_params)
-        if detail_res.status_code != 200:
-            return []
-        detail_items = {v["id"]: v for v in detail_res.json().get("items", [])}
-        results = []
-        for item in items:
-            vid = item["id"].get("videoId")
-            if not vid or vid not in detail_items:
+    # Keep the same key for search + details. Rotate through configured keys
+    # when a key is exhausted, invalid, or temporarily rejected by Google.
+    keys = list(dict.fromkeys(k for k in YOUTUBE_API_KEYS if k))
+    random.shuffle(keys)
+    for api_key in keys:
+        try:
+            search_params = {
+                "part": "snippet",
+                "q": query,
+                "maxResults": max(1, min(int(limit or 1), 10)),
+                "type": "video",
+                "key": api_key,
+            }
+            search_res = await client.get(SEARCH_URL, params=search_params, timeout=10)
+            if search_res.status_code != 200:
+                logger.warning("YouTube Data API search key rejected: HTTP %s", search_res.status_code)
                 continue
-            det = detail_items[vid]
-            dur = det.get("contentDetails", {}).get("duration", "")
-            results.append({
-                "title": item["snippet"].get("title", ""),
-                "url": f"https://www.youtube.com/watch?v={vid}",
-                "duration": format_duration(_duration_seconds(dur)),
-                "channel_name": item["snippet"].get("channelTitle", ""),
-                "views": det.get("statistics", {}).get("viewCount", "0"),
-                "thumbnail": item["snippet"].get("thumbnails", {}).get("high", {}).get("url", ""),
-            })
-        return results
-    except Exception:
-        return []
+            items = search_res.json().get("items", [])
+            video_ids = [item.get("id", {}).get("videoId") for item in items if item.get("id", {}).get("videoId")]
+            if not video_ids:
+                continue
+            details_params = {
+                "part": "contentDetails,statistics",
+                "id": ",".join(video_ids),
+                "key": api_key,
+            }
+            detail_res = await client.get(DETAILS_URL, params=details_params, timeout=10)
+            if detail_res.status_code != 200:
+                logger.warning("YouTube Data API details key rejected: HTTP %s", detail_res.status_code)
+                continue
+            detail_items = {v["id"]: v for v in detail_res.json().get("items", []) if v.get("id")}
+            results = []
+            for item in items:
+                snippet = item.get("snippet") or {}
+                vid = (item.get("id") or {}).get("videoId")
+                det = detail_items.get(vid)
+                if not vid or not det:
+                    continue
+                dur = (det.get("contentDetails") or {}).get("duration", "")
+                thumbs = snippet.get("thumbnails") or {}
+                thumbnail = (thumbs.get("high") or thumbs.get("medium") or thumbs.get("default") or {}).get("url", "")
+                results.append({
+                    "title": snippet.get("title", ""),
+                    "url": f"https://www.youtube.com/watch?v={vid}",
+                    "duration": format_duration(_duration_seconds(dur)),
+                    "channel_name": snippet.get("channelTitle", ""),
+                    "views": (det.get("statistics") or {}).get("viewCount", "0"),
+                    "thumbnail": thumbnail,
+                })
+            if results:
+                return results
+        except Exception as exc:
+            logger.warning("YouTube Data API request failed: %s", type(exc).__name__)
+            continue
+    return []
 
 
 # ── Cookie Handlers ─────────────────────────────────────────────────────────────
@@ -1250,21 +1260,8 @@ class YouTubeAPI:
         if "&" in link:
             link = link.split("&")[0]
 
-        # Fast path 1: NUB API metadata
-        try:
-            vid = _extract_id(link)
-            info = await get_video_info(vid or link, mode="audio")
-            if info and info[0] and info[0] != "N/A":
-                title = info[0]
-                duration_min = info[2]
-                duration_sec = time_to_seconds(duration_min)
-                thumbnail = info[7]
-                vidid = info[1]
-                return title, duration_min, duration_sec, thumbnail, vidid
-        except Exception:
-            pass
-
-        # Search fallback chain: YouTube Data API -> py-yt -> yt-dlp.
+        # Metadata lookup must not depend on obtaining a playable stream URL.
+        # The track resolver tries NUB metadata, YouTube Data API, py-yt and yt-dlp.
         try:
             track, vidid = await self.track(link)
             duration_min = track.get("duration_min") or "00:00"
@@ -1389,7 +1386,44 @@ class YouTubeAPI:
         if cached:
             return cached, cached["vidid"]
 
-        # 1) YouTube Data API v3 (supports key rotation configured in YOUTUBE_API_KEYS).
+        # 1) NUB /info metadata (independent of audio/video stream resolution).
+        if YT_API_TOKEN and BASE_URL:
+            try:
+                response = await asyncio.wait_for(
+                    get_http_client().get(
+                        f"{BASE_URL}/info",
+                        params={"q": link},
+                        headers={"Authorization": f"Bearer {YT_API_TOKEN}"},
+                        timeout=8,
+                    ),
+                    timeout=9,
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    vidid = _extract_id(data.get("video_id") or data.get("youtube_link") or data.get("url") or link)
+                    title = data.get("title")
+                    if vidid and len(vidid) == 11 and title:
+                        duration_min = data.get("duration") or "00:00"
+                        if str(duration_min).isdigit():
+                            duration_min = format_duration(int(duration_min))
+                        track_details = {
+                            "title": title,
+                            "link": data.get("youtube_link") or f"https://www.youtube.com/watch?v={vidid}",
+                            "vidid": vidid,
+                            "duration_min": duration_min,
+                            "thumb": data.get("thumbnail") or f"https://i.ytimg.com/vi/{vidid}/hqdefault.jpg",
+                        }
+                        _mem_cache_set(("search", cache_key), track_details)
+                        _api_record_success()
+                        return track_details, vidid
+                    _api_record_failure()
+                else:
+                    _api_record_failure()
+            except Exception as exc:
+                logger.warning("NUB metadata lookup failed: %s", type(exc).__name__)
+                _api_record_failure()
+
+        # 2) YouTube Data API v3 (supports key rotation configured in YOUTUBE_API_KEYS).
         try:
             api_results = await asyncio.wait_for(youtube_search(link, limit=1), timeout=12)
             if api_results:
@@ -1408,7 +1442,7 @@ class YouTubeAPI:
         except Exception as exc:
             logger.warning("YouTube Data API search failed: %s", type(exc).__name__)
 
-        # 2) py-yt search fallback.
+        # 3) py-yt search fallback.
         try:
             results = VideosSearch(link, limit=1)
             data = await asyncio.wait_for(results.next(), timeout=15)
@@ -1431,7 +1465,7 @@ class YouTubeAPI:
         except Exception as exc:
             logger.warning("py-yt search failed: %s", type(exc).__name__)
 
-        # 3) yt-dlp extractor/search fallback; run blocking extraction off the event loop.
+        # 4) yt-dlp extractor/search fallback; run blocking extraction off the event loop.
         try:
             def _extract_search_result():
                 opts = {"quiet": True, "no_warnings": True, "skip_download": True, "extract_flat": "in_playlist"}
