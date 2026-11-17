@@ -1,6 +1,7 @@
 import math
 import random
 import re
+from urllib.parse import urlsplit
 
 from pyrogram import enums, errors, types
 
@@ -50,7 +51,23 @@ def _parse_inline(segment):
             elif open_tag == "code":
                 parts.append(types.RichTextCode(text=inner))
             elif open_tag == "a":
-                parts.append(types.RichTextUrl(text=inner, url=url))
+                # Telegram rejects malformed URL buttons (BUTTON_URL_INVALID).
+                # Keep the anchor text readable, but only create a clickable
+                # URL for an absolute HTTP(S) URL with a valid host.
+                try:
+                    parsed_url = urlsplit(url or "")
+                    valid_url = (
+                        parsed_url.scheme.lower() in ("http", "https")
+                        and bool(parsed_url.netloc)
+                        and not any(ch.isspace() for ch in url or "")
+                    )
+                except (TypeError, ValueError):
+                    valid_url = False
+
+                if valid_url:
+                    parts.append(types.RichTextUrl(text=inner, url=url))
+                else:
+                    parts.append(inner)
 
     if pos < len(segment):
         parts.append(segment[pos:])
