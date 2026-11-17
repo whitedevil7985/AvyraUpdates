@@ -995,73 +995,40 @@ async def _ytdlp_download(link: str, is_video: bool, out_path: str) -> str | Non
 
 
 async def _api_download(link: str, dl_type: str, ext: str, timeout: int, out_path: str = None):
+    """Download through Ritesh's stream endpoint using the shared response parser."""
     video_id = _extract_id(link)
     if not video_id or len(video_id) < 3:
+        logger.warning("Ritesh skipped: invalid YouTube URL")
+        return None
+    if not API_URL or not API_KEY:
+        logger.warning(
+            "Ritesh skipped: missing config (API_URL=%s, API_KEY=%s)",
+            bool(API_URL), bool(API_KEY),
+        )
         return None
 
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    file_path = out_path or os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
-    tmp_path = file_path + ".part"
-
+    file_path = out_path or os.path.join(DOWNLOAD_DIR, f"ritesh_{video_id}.{ext}")
     if os.path.exists(file_path) and os.path.getsize(file_path) > 10000:
         return file_path
 
-    query = f"https://www.youtube.com/watch?v={video_id}"
-    params = {"query": query, "dl_type": dl_type, "api_key": API_KEY}
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    }
-
     try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(
-                f"{API_URL}/download",
-                params=params,
-                allow_redirects=True,
-                timeout=aiohttp.ClientTimeout(total=timeout),
-            ) as resp:
-                if resp.status != 200:
-                    return None
-
-                ctype = resp.headers.get("Content-Type", "")
-
-                if "application/json" in ctype:
-                    data = await resp.json()
-                    url = (
-                        data.get("url")
-                        or data.get("download_url")
-                        or data.get("link")
-                        or (data.get("data") or {}).get("url")
-                    )
-                    if not url:
-                        return None
-                    async with session.get(
-                        url, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=timeout)
-                    ) as r2:
-                        if r2.status != 200:
-                            return None
-                        with open(tmp_path, "wb") as f:
-                            async for chunk in r2.content.iter_chunked(131072):
-                                f.write(chunk)
-                else:
-                    with open(tmp_path, "wb") as f:
-                        async for chunk in resp.content.iter_chunked(131072):
-                            f.write(chunk)
-
-        if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 10000:
-            os.replace(tmp_path, file_path)
-            return file_path
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        return None
+        logger.info("Ritesh API request started for %s (%s)", video_id, dl_type)
+        # Do not let a slow provider hold the entire provider race open.
+        stream_url = await _ritesh_api_get_stream(
+            link, is_video=(dl_type == "video"), timeout=min(int(timeout or 25), 25)
+        )
+        if not stream_url:
+            logger.warning("Ritesh API returned no stream for %s", video_id)
+            return None
+        if await _download_stream_url(stream_url, file_path, timeout=min(int(timeout or 35), 35)):
+            if os.path.exists(file_path) and os.path.getsize(file_path) > 10000:
+                logger.info("Ritesh API download completed for %s", video_id)
+                return file_path
+        logger.warning("Ritesh stream download failed or returned a small file for %s", video_id)
     except Exception:
-        for p in (tmp_path, file_path):
-            if os.path.exists(p) and p == tmp_path:
-                try:
-                    os.remove(p)
-                except Exception:
-                    pass
-        return None
+        logger.exception("Ritesh download failed for %s", video_id)
+    return None
 
 
 async def _inflex_api_download(link: str, is_video: bool, ext: str, timeout: int, out_path: str = None) -> str | None:
@@ -1143,10 +1110,20 @@ async def _race_download(link: str, is_video: bool = False) -> str | None:
     tasks = []
     if INFLEX_API_KEY and INFLEX_API_URL:
         tasks.append(asyncio.create_task(_inflex_worker(), name="Inflex_API"))
+    else:
+        logger.warning("Inflex provider disabled: missing API URL/key")
     if API_KEY and API_URL:
+        logger.info("Ritesh provider enabled; scheduling request for %s", video_id)
         tasks.append(asyncio.create_task(_ritesh_worker(), name="Ritesh_API"))
+    else:
+        logger.warning(
+            "Ritesh provider disabled: API_URL=%s API_KEY=%s",
+            bool(API_URL), bool(API_KEY),
+        )
     if YT_API_TOKEN and BASE_URL:
         tasks.append(asyncio.create_task(_nub_worker(), name="NUB_API"))
+    else:
+        logger.info("NUB provider disabled: missing token/base URL")
 
     winner_file = None
     # Provider downloads can occasionally remain open until their long
